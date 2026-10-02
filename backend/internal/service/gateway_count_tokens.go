@@ -151,6 +151,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	// 构建上游请求
 	upstreamReq, wireBody, err := s.buildCountTokensRequest(ctx, c, account, body, token, tokenType, reqModel, shouldMimicClaudeCode)
 	if err != nil {
+		var conflict *FingerprintEntrypointConflictError
+		if errors.As(err, &conflict) {
+			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", conflict.Error())
+			return err
+		}
 		s.countTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
 		return err
 	}
@@ -569,9 +574,15 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		}
 	}
 
-	// OAuth 账号：应用指纹到请求头（受设置开关控制）
+	// OAuth 账号：应用指纹到请求头（受设置开关控制）。
+	// 非 mimic 路径只沿用账号级版本和稳定标识，入口类型跟当前请求。
 	if ctEnableFP && ctFingerprint != nil {
 		s.identityService.ApplyFingerprint(req, ctFingerprint)
+		if !(tokenType == "oauth" && mimicClaudeCode) {
+			if err := alignNonMimicOAuthEntrypoint(req, clientHeaders, body, ctFingerprint.UserAgent, account.ID); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 
 	// 确保必要的 headers 存在（保持原始大小写）
