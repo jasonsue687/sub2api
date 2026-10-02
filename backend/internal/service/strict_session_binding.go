@@ -91,6 +91,7 @@ type StrictSessionPlan struct {
 	GroupID               *int64
 	Protocol              string
 	RequestPlatform       string
+	ForcePlatform         bool
 	SameAccountRetryLimit int
 	BoundAccountID        int64
 }
@@ -363,6 +364,11 @@ func ProvideGatewayService(
 	return svc
 }
 
+// strictSessionLogsRedacted 在严格模式开启时禁止把完整会话身份写入日志。
+func (s *GatewayService) strictSessionLogsRedacted() bool {
+	return s != nil && s.cfg != nil && s.cfg.Gateway.StrictSessionBinding.Enabled
+}
+
 func (s *GatewayService) SetStrictSessionBindingStore(store StrictSessionBindingStore) {
 	if s == nil {
 		return
@@ -416,7 +422,7 @@ func (s *GatewayService) SelectStrictSessionAccount(
 			return s.accountRepo.GetByID(ctx, accountID)
 		},
 		BlockReason: func(ctx context.Context, account *Account) (string, bool) {
-			return s.strictAccountBlockReason(ctx, account, groupID, requestedModel, requestPlatform, sessionHash)
+			return s.strictAccountBlockReason(ctx, account, groupID, requestedModel, requestPlatform, plan.ForcePlatform, sessionHash)
 		},
 		Acquire: func(ctx context.Context, account *Account) (*AccountSelectionResult, error) {
 			return s.acquireStrictBoundAccount(ctx, account)
@@ -536,14 +542,16 @@ func releaseSelection(selected *AccountSelectionResult) {
 	}
 }
 
-func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *Account, groupID *int64, requestedModel, requestPlatform, sessionHash string) (string, bool) {
+func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *Account, groupID *int64, requestedModel, requestPlatform string, hasForcePlatform bool, sessionHash string) (string, bool) {
 	if account == nil {
 		return "account_deleted", true
 	}
-	if !s.isAccountInGroup(account, groupID) {
+	// simple 模式的官方选号忽略分组。这里同样不把“不在 Key 分组”当成永久移出，
+	// 否则首次合法选中的账号会再也回不去。
+	if !s.strictIgnoresGroup(account) && !s.isAccountInGroup(account, groupID) {
 		return "removed_from_pool", true
 	}
-	if !strictPlatformAllowed(account, requestPlatform) {
+	if !s.strictPlatformAllowed(account, requestPlatform, hasForcePlatform) {
 		return "platform_mismatch", true
 	}
 	if !account.IsActive() || !account.Schedulable {
@@ -586,20 +594,24 @@ func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *
 	return "", false
 }
 
-func strictPlatformAllowed(account *Account, requestPlatform string) bool {
+// strictIgnoresGroup 与官方 simple 模式选号一致：候选不按分组过滤。
+func (s *GatewayService) strictIgnoresGroup(account *Account) bool {
+	return account != nil && s != nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
+}
+
+// strictPlatformAllowed 复用官方 isAccountAllowedForPlatform。
+// 未强制平台时，Anthropic/Gemini 可以混入开启混合调度的 Antigravity 账号。
+// 强制平台时只允许同一平台，不再额外放过 Anthropic。
+func (s *GatewayService) strictPlatformAllowed(account *Account, requestPlatform string, hasForcePlatform bool) bool {
 	if account == nil {
 		return false
 	}
-	switch requestPlatform {
-	case "", PlatformComposite:
-		return account.Platform == PlatformAnthropic || account.Platform == PlatformAntigravity
-	case PlatformAnthropic:
-		return account.Platform == PlatformAnthropic || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled())
-	case PlatformAntigravity:
-		return account.Platform == PlatformAntigravity || account.Platform == PlatformAnthropic
-	default:
-		return account.Platform == requestPlatform || account.Platform == PlatformAnthropic
+	platform := requestPlatform
+	if platform == "" || platform == PlatformComposite {
+		platform = PlatformAnthropic
 	}
+	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+	return s.isAccountAllowedForPlatform(account, platform, useMixed)
 }
 
 func (s *GatewayService) acquireStrictBoundAccount(ctx context.Context, account *Account) (*AccountSelectionResult, error) {

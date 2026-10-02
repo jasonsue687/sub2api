@@ -37,6 +37,23 @@ func TestStrictFailoverDoesNotSwitchAccounts(t *testing.T) {
 	require.Equal(t, FailoverExhausted, fs.HandleSelectionExhausted(context.Background()))
 }
 
+func TestStrictSameAccountRetryLimitZeroDisablesRetries(t *testing.T) {
+	fs := NewFailoverState(10, true)
+	fs.EnableStrictBinding(0)
+	mock := &mockTempUnscheduler{}
+	err := &service.UpstreamFailoverError{
+		StatusCode:               http.StatusTooManyRequests,
+		RetryableOnSameAccount:   true,
+		SameAccountRetryDelay:    time.Millisecond,
+		SameAccountRetryDeadline: time.Now().Add(time.Minute),
+	}
+	action := fs.HandleFailoverError(context.Background(), mock, 7, service.PlatformAnthropic, 5, err)
+	require.Equal(t, FailoverExhausted, action)
+	require.Zero(t, fs.SameAccountRetryCount[7])
+	require.Zero(t, fs.SwitchCount)
+	require.Empty(t, fs.FailedAccountIDs)
+}
+
 func TestStrictFailoverRetriesSameAccountThenStops(t *testing.T) {
 	fs := NewFailoverState(10, true)
 	fs.EnableStrictBinding(1)
@@ -69,11 +86,14 @@ func TestStrictSessionErrorIsRecognizable(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	handler := &GatewayHandler{}
-	handler.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorFallbackRequired, "rate_limited", 42, false)
+	sessionID := "c72554f2-1234-5678-abcd-123456789abc"
+	c.Request.Header.Set("X-Session-Id", sessionID)
+	handler.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorFallbackRequired, "rate_limited", false)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	require.Equal(t, strictSessionErrorFallbackRequired, recorder.Header().Get(strictSessionErrorHeader))
-	require.Equal(t, "42", recorder.Header().Get(strictSessionAccountHeader))
+	require.Empty(t, recorder.Header().Get("X-Sub2API-Bound-Account-Id"))
 	require.Contains(t, recorder.Body.String(), `"type":"session_binding_error"`)
 	require.Contains(t, recorder.Body.String(), `"code":"strict_session_fallback_required"`)
-	require.NotContains(t, recorder.Body.String(), "session-secret")
+	require.NotContains(t, recorder.Body.String(), sessionID)
+	require.NotContains(t, recorder.Body.String(), "42")
 }

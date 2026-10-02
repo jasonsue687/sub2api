@@ -21,6 +21,7 @@ func TestStrictSessionBindingIntegrationUniqueAndSurvivesMissingAccount(t *testi
 
 	const n = 8
 	winners := make([]int64, n)
+	errs := make([]error, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
@@ -33,11 +34,16 @@ func TestStrictSessionBindingIntegrationUniqueAndSurvivesMissingAccount(t *testi
 				Protocol:           service.StrictSessionProtocol,
 				APIKeyID:           1,
 			})
-			require.NoError(t, err)
-			winners[i] = row.AccountID
+			errs[i] = err
+			if err == nil && row != nil {
+				winners[i] = row.AccountID
+			}
 		}(i)
 	}
 	wg.Wait()
+	for i, createErr := range errs {
+		require.NoError(t, createErr, "create %d", i)
+	}
 
 	stored, err := repo.Get(ctx, bindingKey)
 	require.NoError(t, err)

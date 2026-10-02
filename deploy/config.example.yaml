@@ -540,17 +540,26 @@ gateway:
     enabled: false
     # Trusted end-user header when many users share one Sub2API API key.
     # Empty means the API key itself is the tenant boundary.
-    # 多用户共用一把 Key 时，由外层网关传入的可信终端用户头。为空则租户边界就是 API Key。
+    # When set, end_user_header_trusted must be true: the edge has to overwrite
+    # or strip the header so clients cannot choose their own tenant.
+    # 多用户共用一把 Key 时，由外层网关传入的终端用户头。为空则租户边界就是 API Key。
+    # 非空时必须同时把 end_user_header_trusted 设为 true，确认边缘会覆盖或剥离该头。
     end_user_header: ""
+    end_user_header_trusted: false
     # Extra stable session header. metadata.user_id and X-Claude-Code-Session-Id are always accepted.
     # 额外的稳定会话头。metadata.user_id 与 X-Claude-Code-Session-Id 始终有效。
     session_header: "X-Session-Id"
-    # 0 uses the account pool_mode_retry_count. Same-account retries stay bounded.
-    # 0 表示沿用账号同账号重试上限。
-    same_account_retry_limit: 0
+    # -1 inherits the account pool_mode_retry_count.
+    # 0 disables same-account retries, including deadline-based retries.
+    # A positive value caps retries even when the account allows more.
+    # -1 沿用账号同账号重试上限。0 禁用同账号重试。大于 0 时再收紧。
+    same_account_retry_limit: -1
     # Independent relay. Leave disabled to return strict_session_fallback_required
     # so an outer New API gateway can route to its own third-party channel.
     # 独立中转。关闭时返回 strict_session_fallback_required，由外层 New API 转指定渠道。
+    # timeout_seconds bounds the response header and the idle gap between body
+    # reads. It is not a total body deadline. 0 means 60s header / 5min stall.
+    # Redirects are rejected. 4xx responses are passed through unchanged.
     third_party:
       enabled: false
       base_url: ""

@@ -1493,14 +1493,17 @@ type TLSProfileConfig struct {
 type GatewayStrictSessionBindingConfig struct {
 	// Enabled 默认 false。关闭时不读取、不写入绑定，调度保持官方行为。
 	Enabled bool `mapstructure:"enabled"`
-	// EndUserHeader 是外层网关在共用一把 Sub2API Key 时传入的可信终端用户标识。
+	// EndUserHeader 是外层网关在共用一把 Sub2API Key 时传入的终端用户标识。
 	// 为空则租户边界就是 API Key。非空时该头必须出现，否则严格模式拒绝请求。
 	EndUserHeader string `mapstructure:"end_user_header"`
+	// EndUserHeaderTrusted 必须在配置了 EndUserHeader 时显式设为 true。
+	// 这表示运维确认边缘会覆盖或剥离该头，客户端不能自己指定终端用户。
+	EndUserHeaderTrusted bool `mapstructure:"end_user_header_trusted"`
 	// SessionHeader 是 metadata.user_id / X-Claude-Code-Session-Id 之外的稳定会话头。
 	// 默认 X-Session-Id。内容摘要永远不会被当作永久会话 ID。
 	SessionHeader string `mapstructure:"session_header"`
 	// SameAccountRetryLimit 限制原账号上的可安全重试次数。
-	// 0 表示沿用账号的 pool_mode_retry_count（同样有上界）。
+	// 0 禁用同账号重试。大于 0 时收紧上限。-1 沿用账号的 pool_mode_retry_count。
 	SameAccountRetryLimit int `mapstructure:"same_account_retry_limit"`
 	// ThirdParty 是独立于订阅账号池的中转目标。未启用时返回可识别错误，
 	// 由外层 New API 转到指定第三方渠道。
@@ -1509,10 +1512,12 @@ type GatewayStrictSessionBindingConfig struct {
 
 // GatewayStrictThirdPartyConfig 是严格绑定失败后的独立中转，不会进入订阅账号池。
 type GatewayStrictThirdPartyConfig struct {
-	Enabled        bool   `mapstructure:"enabled"`
-	BaseURL        string `mapstructure:"base_url"`
-	APIKey         string `mapstructure:"api_key"`
-	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+	Enabled bool   `mapstructure:"enabled"`
+	BaseURL string `mapstructure:"base_url"`
+	APIKey  string `mapstructure:"api_key"`
+	// TimeoutSeconds 是等待响应头以及两次读之间的空闲上限，不是整段响应体的总时长。
+	// 0 使用内置默认：响应头 60 秒，流空闲 5 分钟。活跃的长流不会被总时长截断。
+	TimeoutSeconds int `mapstructure:"timeout_seconds"`
 }
 
 // SessionHeaderOrDefault 返回严格模式接受的附加会话头。
@@ -1536,11 +1541,14 @@ func (c *GatewayStrictSessionBindingConfig) NormalizeAndValidate() error {
 	if !c.Enabled {
 		return nil
 	}
-	if c.SameAccountRetryLimit < 0 {
-		return fmt.Errorf("same_account_retry_limit must be >= 0")
+	if c.SameAccountRetryLimit < -1 {
+		return fmt.Errorf("same_account_retry_limit must be -1, 0, or positive")
 	}
 	if err := validateOptionalHTTPHeaderName(c.EndUserHeader); err != nil {
 		return fmt.Errorf("end_user_header: %w", err)
+	}
+	if c.EndUserHeader != "" && !c.EndUserHeaderTrusted {
+		return fmt.Errorf("end_user_header_trusted must be true when end_user_header is set; the edge must overwrite or strip that header")
 	}
 	if c.SessionHeader != "" {
 		if err := validateOptionalHTTPHeaderName(c.SessionHeader); err != nil {
@@ -2524,8 +2532,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.strict_session_binding.enabled", false)
 	viper.SetDefault("gateway.strict_session_binding.end_user_header", "")
+	viper.SetDefault("gateway.strict_session_binding.end_user_header_trusted", false)
 	viper.SetDefault("gateway.strict_session_binding.session_header", "X-Session-Id")
-	viper.SetDefault("gateway.strict_session_binding.same_account_retry_limit", 0)
+	viper.SetDefault("gateway.strict_session_binding.same_account_retry_limit", -1)
 	viper.SetDefault("gateway.strict_session_binding.third_party.enabled", false)
 	viper.SetDefault("gateway.strict_session_binding.third_party.base_url", "")
 	viper.SetDefault("gateway.strict_session_binding.third_party.api_key", "")

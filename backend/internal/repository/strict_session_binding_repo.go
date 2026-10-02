@@ -13,21 +13,15 @@ const strictSessionBindingSelectList = `
 	id, binding_key, session_fingerprint, account_id, protocol, api_key_id, group_id, end_user_fingerprint, created_at`
 
 // createStrictSessionBindingSQL 在一条语句里完成插入或读回已有行。
-// ON CONFLICT DO NOTHING 保证并发首请求只有一个 account_id，并且不会改写旧行。
+// DO UPDATE 把 account_id 设回原值：不改写赢家，但会等待冲突事务并 RETURNING 那一行。
+// DO NOTHING 加同语句 SELECT 会用插入前的快照，并发输家可能看到 0 行。
 const createStrictSessionBindingSQL = `
-WITH inserted AS (
-	INSERT INTO strict_session_bindings (
-		binding_key, session_fingerprint, account_id, protocol, api_key_id, group_id, end_user_fingerprint
-	) VALUES ($1, $2, $3, $4, $5, $6, $7)
-	ON CONFLICT (binding_key) DO NOTHING
-	RETURNING ` + strictSessionBindingSelectList + `
-)
-SELECT ` + strictSessionBindingSelectList + ` FROM inserted
-UNION ALL
-SELECT ` + strictSessionBindingSelectList + `
-FROM strict_session_bindings
-WHERE binding_key = $1
-  AND NOT EXISTS (SELECT 1 FROM inserted)`
+INSERT INTO strict_session_bindings (
+	binding_key, session_fingerprint, account_id, protocol, api_key_id, group_id, end_user_fingerprint
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (binding_key) DO UPDATE
+SET account_id = strict_session_bindings.account_id
+RETURNING ` + strictSessionBindingSelectList
 
 const getStrictSessionBindingSQL = `
 SELECT ` + strictSessionBindingSelectList + `

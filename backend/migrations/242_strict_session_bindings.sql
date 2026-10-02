@@ -6,7 +6,7 @@
 
 CREATE TABLE IF NOT EXISTS strict_session_bindings (
     id                   BIGSERIAL PRIMARY KEY,
-    binding_key          CHAR(64) NOT NULL,
+    binding_key          VARCHAR(64) NOT NULL,
     session_fingerprint  VARCHAR(16) NOT NULL,
     account_id           BIGINT NOT NULL CHECK (account_id > 0),
     protocol             VARCHAR(32) NOT NULL,

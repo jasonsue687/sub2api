@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,14 @@ func TestStrictSessionBindingRepositoryNotFoundIsExplicit(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestCreateSQLReturnsStoredRowOnConflict(t *testing.T) {
+	normalized := strings.Join(strings.Fields(strings.ToUpper(createStrictSessionBindingSQL)), " ")
+	require.Contains(t, normalized, "ON CONFLICT (BINDING_KEY) DO UPDATE")
+	require.Contains(t, normalized, "SET ACCOUNT_ID = STRICT_SESSION_BINDINGS.ACCOUNT_ID")
+	require.Contains(t, normalized, "RETURNING")
+	require.NotContains(t, normalized, "DO NOTHING")
+}
+
 func TestStrictSessionBindingCacheHasNoTTLAndMissesFallBack(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -56,9 +65,9 @@ func TestStrictSessionBindingCacheHasNoTTLAndMissesFallBack(t *testing.T) {
 	require.Equal(t, int64(11), created.AccountID)
 
 	key := strictSessionBindingCacheKey(created.BindingKey)
-	require.Equal(t, time.Duration(0), mr.TTL(key))
-	mr.FastForward(48 * time.Hour)
-	require.True(t, mr.Exists(key))
+	require.Equal(t, strictSessionBindingCacheTTL, mr.TTL(key))
+	mr.FastForward(strictSessionBindingCacheTTL + time.Second)
+	require.False(t, mr.Exists(key))
 
 	mr.FlushAll()
 	got, err := store.Get(ctx, created.BindingKey)

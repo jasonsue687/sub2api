@@ -1,9 +1,9 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -19,7 +19,6 @@ const (
 	strictSessionErrorThirdPartyFailed  = "strict_session_third_party_failed"
 	strictSessionErrorStreamInterrupted = "strict_session_stream_interrupted"
 	strictSessionErrorHeader            = "X-Sub2API-Error-Code"
-	strictSessionAccountHeader          = "X-Sub2API-Bound-Account-Id"
 )
 
 // strictSessionRuntime 是 Claude Messages 请求上的严格绑定状态。
@@ -97,33 +96,33 @@ func (h *GatewayHandler) selectMessageAccount(
 func (h *GatewayHandler) writeStrictSessionSetupError(c *gin.Context, reqLog *zap.Logger, err error, streamStarted bool) {
 	switch {
 	case errors.Is(err, service.ErrStrictSessionIDRequired):
-		h.respondStrictSessionError(c, http.StatusBadRequest, strictSessionErrorIDRequired, "stable_session_id_required", 0, streamStarted)
+		h.respondStrictSessionError(c, http.StatusBadRequest, strictSessionErrorIDRequired, "stable_session_id_required", streamStarted)
 	case errors.Is(err, service.ErrStrictEndUserRequired):
-		h.respondStrictSessionError(c, http.StatusBadRequest, strictSessionErrorEndUserRequired, "end_user_required", 0, streamStarted)
+		h.respondStrictSessionError(c, http.StatusBadRequest, strictSessionErrorEndUserRequired, "end_user_required", streamStarted)
 	default:
 		if reqLog != nil {
 			reqLog.Warn("strict_session.store_failed", zap.Error(err))
 		}
-		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorStoreUnavailable, "store_unavailable", 0, streamStarted)
+		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorStoreUnavailable, "store_unavailable", streamStarted)
 	}
 }
 
 // handleStrictSelectFailure 处理严格选号的存储故障和原账号不可承接。
 // 返回 false 表示这不是严格绑定错误，调用方继续走官方选号失败路径。
-func (h *GatewayHandler) handleStrictSelectFailure(c *gin.Context, rt *strictSessionRuntime, reqLog *zap.Logger, err error, body []byte, streamStarted bool) bool {
+func (h *GatewayHandler) handleStrictSelectFailure(c *gin.Context, rt *strictSessionRuntime, reqLog *zap.Logger, err error, body []byte, streamStarted bool, writerSizeAtEntry int) bool {
 	if rt == nil || !rt.Active || err == nil {
 		return false
 	}
 	var fallback *service.StrictSessionFallbackError
 	if errors.As(err, &fallback) {
-		h.dispatchStrictFallback(c, rt, reqLog, fallback.AccountID, fallback.Reason, true, body, streamStarted, c.Writer.Size())
+		h.dispatchStrictFallback(c, rt, reqLog, fallback.AccountID, fallback.Reason, true, true, body, streamStarted, writerSizeAtEntry)
 		return true
 	}
 	if errors.Is(err, service.ErrStrictSessionStore) {
 		if reqLog != nil {
 			reqLog.Warn("strict_session.store_failed", zap.String("session_fp", rt.fingerprint()), zap.Error(err))
 		}
-		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorStoreUnavailable, "store_unavailable", rt.boundAccountID(), streamStarted)
+		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorStoreUnavailable, "store_unavailable", streamStarted)
 		return true
 	}
 	return false
@@ -139,10 +138,10 @@ func (h *GatewayHandler) dispatchStrictFailover(
 	body []byte,
 	platform string,
 	streamStarted bool,
-	writerSizeBeforeForward int,
+	writerSizeAtEntry int,
 ) bool {
-	if c.Writer.Size() != writerSizeBeforeForward {
-		h.respondStrictStreamInterrupted(c, rt, reqLog, accountIDOf(account), streamStarted)
+	if strictResponseStarted(c, streamStarted, writerSizeAtEntry) {
+		h.respondStrictStreamInterrupted(c, rt, reqLog, accountIDOf(account), true)
 		return true
 	}
 	if failoverClientGone(c) {
@@ -157,7 +156,7 @@ func (h *GatewayHandler) dispatchStrictFailover(
 		return true
 	default:
 		decision := service.DecideStrictFallback(service.StrictFallbackInput{
-			ResponseWritten:   c.Writer.Size() != writerSizeBeforeForward,
+			ResponseWritten:   strictResponseStarted(c, streamStarted, writerSizeAtEntry),
 			ClientCanceled:    c.Request != nil && c.Request.Context().Err() != nil,
 			AccountSide:       false,
 			RetryableUpstream: failoverErr != nil && failoverErr.ShouldRetryNextAccount(),
@@ -167,7 +166,7 @@ func (h *GatewayHandler) dispatchStrictFailover(
 			h.handleFailoverExhausted(c, fs.LastFailoverErr, platform, streamStarted)
 			return true
 		}
-		h.dispatchStrictFallback(c, rt, reqLog, account.ID, "upstream_exhausted", false, body, streamStarted, writerSizeBeforeForward)
+		h.dispatchStrictFallback(c, rt, reqLog, account.ID, "upstream_exhausted", false, failoverErr != nil && failoverErr.ShouldRetryNextAccount(), body, streamStarted, writerSizeAtEntry)
 		return true
 	}
 }
@@ -179,19 +178,21 @@ func (h *GatewayHandler) dispatchStrictFallback(
 	accountID int64,
 	reason string,
 	accountSide bool,
+	retryableUpstream bool,
 	body []byte,
 	streamStarted bool,
-	writerSizeBefore int,
+	writerSizeAtEntry int,
 ) {
-	if c.Request != nil && c.Request.Context().Err() != nil && c.Writer.Size() == writerSizeBefore {
+	responseStarted := strictResponseStarted(c, streamStarted, writerSizeAtEntry)
+	if !responseStarted && c.Request != nil && c.Request.Context().Err() != nil {
 		failoverClientGone(c)
 		return
 	}
 	decision := service.DecideStrictFallback(service.StrictFallbackInput{
-		ResponseWritten:   c.Writer.Size() != writerSizeBefore,
+		ResponseWritten:   responseStarted,
 		ClientCanceled:    c.Request != nil && c.Request.Context().Err() != nil,
 		AccountSide:       accountSide,
-		RetryableUpstream: !accountSide,
+		RetryableUpstream: retryableUpstream,
 		ThirdPartyEnabled: h.gatewayService != nil && h.gatewayService.StrictThirdPartyEnabled(),
 	})
 	fingerprint := ""
@@ -216,7 +217,7 @@ func (h *GatewayHandler) dispatchStrictFallback(
 			}
 			return
 		}
-		if c.Writer.Size() != writerSizeBefore {
+		if strictResponseStarted(c, streamStarted, writerSizeAtEntry) && c.Writer.Size() != writerSizeAtEntry {
 			if reqLog != nil {
 				reqLog.Warn("strict_session.third_party_partial",
 					zap.Int64("account_id", accountID),
@@ -234,9 +235,13 @@ func (h *GatewayHandler) dispatchStrictFallback(
 				zap.Error(err),
 			)
 		}
-		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorThirdPartyFailed, "third_party_failed", accountID, streamStarted)
+		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorThirdPartyFailed, "third_party_failed", streamStarted || responseStarted)
 	case service.StrictFallbackPassthrough:
-		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorFallbackRequired, reason, accountID, streamStarted)
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			failoverClientGone(c)
+			return
+		}
+		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorFallbackRequired, reason, streamStarted)
 	default:
 		service.LogStrictSession(accountID, fingerprint, reason, "error")
 		if reqLog != nil {
@@ -247,8 +252,21 @@ func (h *GatewayHandler) dispatchStrictFallback(
 				zap.String("path", "error"),
 			)
 		}
-		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorFallbackRequired, reason, accountID, streamStarted)
+		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorFallbackRequired, reason, streamStarted || responseStarted)
 	}
+}
+
+func strictResponseStarted(c *gin.Context, streamStarted bool, writerSizeAtEntry int) bool {
+	if streamStarted {
+		return true
+	}
+	if c == nil || c.Writer == nil {
+		return false
+	}
+	if c.Writer.Written() {
+		return true
+	}
+	return c.Writer.Size() != writerSizeAtEntry
 }
 
 func (h *GatewayHandler) respondStrictStreamInterrupted(c *gin.Context, rt *strictSessionRuntime, reqLog *zap.Logger, accountID int64, streamStarted bool) {
@@ -263,18 +281,22 @@ func (h *GatewayHandler) respondStrictStreamInterrupted(c *gin.Context, rt *stri
 			zap.String("path", "stream_interrupted"),
 		)
 	}
-	h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorStreamInterrupted, "stream_interrupted", accountID, streamStarted)
+	h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorStreamInterrupted, "stream_interrupted", true)
 }
 
-func (h *GatewayHandler) respondStrictSessionError(c *gin.Context, status int, code, reason string, accountID int64, streamStarted bool) {
+func (h *GatewayHandler) respondStrictSessionError(c *gin.Context, status int, code, reason string, streamStarted bool) {
 	if c.Writer != nil && !c.Writer.Written() {
 		c.Header(strictSessionErrorHeader, code)
-		if accountID > 0 {
-			c.Header(strictSessionAccountHeader, strconv.FormatInt(accountID, 10))
-		}
 	}
 	message := "Strict session binding blocked subscription-account reassignment (" + reason + ")"
 	h.handleStreamingAwareErrorWithCode(c, status, strictSessionErrorType, code, message, streamStarted)
+}
+
+func (h *GatewayHandler) releaseStrictBoundSession(account *service.Account, sessionKey string) {
+	if h == nil || h.gatewayService == nil || account == nil {
+		return
+	}
+	h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
 }
 
 func (rt *strictSessionRuntime) fingerprint() string {

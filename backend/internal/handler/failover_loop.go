@@ -142,8 +142,10 @@ type FailoverState struct {
 
 	// strictBinding 禁止跨订阅账号切换。同账号有界重试仍然允许。
 	strictBinding bool
-	// strictSameAccountRetryLimit > 0 时收紧同账号重试上限。
-	strictSameAccountRetryLimit int
+	// strictSameAccountRetryConfigured 表示调用方显式传入了上限。
+	// 0 禁用同账号重试；大于 0 时收紧上限；-1 沿用账号 pool_mode_retry_count。
+	strictSameAccountRetryConfigured bool
+	strictSameAccountRetryLimit      int
 }
 
 // NewFailoverState 创建 failover 状态
@@ -194,16 +196,16 @@ func (s *FailoverState) allExclusionsAreProfitVetoed() bool {
 }
 
 // EnableStrictBinding 打开严格会话绑定的故障处理。
-// 同账号可安全重试仍然生效；重试耗尽后不再切换订阅账号。
-// sameAccountRetryLimit <= 0 时沿用调用方传入的账号级上限。
+// sameAccountRetryLimit 的 0 会生效：禁用同账号重试。
+// 大于 0 时收紧上限，包括带 SameAccountRetryDeadline 的错误。
+// -1 沿用调用方传入的账号级 pool_mode_retry_count。
 func (s *FailoverState) EnableStrictBinding(sameAccountRetryLimit int) {
 	if s == nil {
 		return
 	}
 	s.strictBinding = true
-	if sameAccountRetryLimit > 0 {
-		s.strictSameAccountRetryLimit = sameAccountRetryLimit
-	}
+	s.strictSameAccountRetryConfigured = true
+	s.strictSameAccountRetryLimit = sameAccountRetryLimit
 }
 
 // StrictBinding 报告本次故障转移是否禁止跨账号切换。
@@ -231,13 +233,23 @@ func (s *FailoverState) HandleFailoverError(
 		return FailoverExhausted
 	}
 
-	if s.strictBinding && s.strictSameAccountRetryLimit > 0 && (retryLimit <= 0 || s.strictSameAccountRetryLimit < retryLimit) {
-		retryLimit = s.strictSameAccountRetryLimit
+	if s.strictBinding && s.strictSameAccountRetryConfigured {
+		switch {
+		case s.strictSameAccountRetryLimit == 0:
+			retryLimit = 0
+		case s.strictSameAccountRetryLimit > 0 && (retryLimit <= 0 || s.strictSameAccountRetryLimit < retryLimit):
+			retryLimit = s.strictSameAccountRetryLimit
+		}
 	}
 
 	// 同账号重试不算切换账号，粘性会话仅在实际切换时强制缓存计费。
 	retryCount := s.SameAccountRetryCount[accountID]
 	sameAccountRetry := sameAccountRetryAllowed(failoverErr, retryCount, retryLimit)
+	if s.strictBinding && s.strictSameAccountRetryConfigured && s.strictSameAccountRetryLimit >= 0 {
+		if s.strictSameAccountRetryLimit == 0 || retryCount >= s.strictSameAccountRetryLimit {
+			sameAccountRetry = false
+		}
+	}
 	if needForceCacheBilling(s.hasBoundSession, failoverErr, sameAccountRetry) {
 		s.ForceCacheBilling = true
 	}

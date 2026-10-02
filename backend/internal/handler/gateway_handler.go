@@ -234,6 +234,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// Track if we've started streaming (for error handling)
 	streamStarted := false
+	writerSizeAtEntry := 0
+	if c.Writer != nil {
+		writerSizeAtEntry = c.Writer.Size()
+	}
 
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
 	if h.errorPassthroughService != nil {
@@ -652,6 +656,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.writeStrictSessionSetupError(c, reqLog, err, streamStarted)
 		return
 	}
+	if strictRT != nil && strictRT.Plan != nil {
+		if _, forced := middleware2.GetForcePlatformFromContext(c); forced {
+			strictRT.Plan.ForcePlatform = true
+		}
+	}
 	if strictRT.Active && strictRT.Plan != nil && sessionKey != strictRT.Plan.SessionID {
 		// 每轮变化的消息摘要不能当作永久会话键。改用绑定键哈希，并丢掉按摘要预取的粘性账号。
 		sessionKey = strictRT.Plan.BindingKey
@@ -718,7 +727,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			)
 			selection, err := h.selectMessageAccount(c, strictRT, currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
 			if err != nil {
-				if h.handleStrictSelectFailure(c, strictRT, reqLog, err, body, streamStarted) {
+				if h.handleStrictSelectFailure(c, strictRT, reqLog, err, body, streamStarted, writerSizeAtEntry) {
 					return
 				}
 				if failoverClientGone(c) {
@@ -803,7 +812,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("platform", platform),
 					)
 					if strictRT.Active {
-						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, body, streamStarted, c.Writer.Size())
+						h.releaseStrictBoundSession(account, sessionKey)
+						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry)
 						return
 					}
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
@@ -819,7 +829,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 					)
 					if strictRT.Active {
-						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, body, streamStarted, c.Writer.Size())
+						h.releaseStrictBoundSession(account, sessionKey)
+						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry)
 						return
 					}
 					h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", gatewayQueueFullCode, "Too many pending requests, please retry later", streamStarted)
@@ -847,7 +858,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
 					if strictRT.Active {
-						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, body, streamStarted, c.Writer.Size())
+						h.releaseStrictBoundSession(account, sessionKey)
+						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry)
 						return
 					}
 					h.handleConcurrencyError(c, err, "account", streamStarted)
@@ -865,7 +877,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				reqLog.Debug("gateway.account_slot_profit_vetoed", zap.Int64("account_id", account.ID), zap.String("reason", reason))
 				if strictRT.Active {
-					h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "profit_control", true, body, streamStarted, c.Writer.Size())
+					h.releaseStrictBoundSession(account, sessionKey)
+					h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "profit_control", true, true, body, streamStarted, writerSizeAtEntry)
 					return
 				}
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
@@ -1120,16 +1133,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
+					if strictRT.Active && strictResponseStarted(c, streamStarted, writerSizeAtEntry) {
+						h.respondStrictStreamInterrupted(c, strictRT, reqLog, account.ID, true)
+						return
+					}
 					if c.Writer.Size() != writerSizeBeforeForward {
-						if strictRT.Active {
-							h.respondStrictStreamInterrupted(c, strictRT, reqLog, account.ID, true)
-							return
-						}
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
 					}
 					if strictRT.Active {
-						if h.dispatchStrictFailover(c, fs, strictRT, reqLog, account, failoverErr, body, account.Platform, streamStarted, writerSizeBeforeForward) {
+						if h.dispatchStrictFailover(c, fs, strictRT, reqLog, account, failoverErr, body, account.Platform, streamStarted, writerSizeAtEntry) {
 							return
 						}
 						// 同账号重试：释放本次会话注册后回到原账号，不改选其他订阅账号。

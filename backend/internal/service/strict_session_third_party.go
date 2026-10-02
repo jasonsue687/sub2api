@@ -3,14 +3,24 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+)
+
+const (
+	strictThirdPartyDefaultHeaderTimeout = 60 * time.Second
+	strictThirdPartyDefaultStallTimeout  = 5 * time.Minute
+	strictThirdPartyDialTimeout          = 10 * time.Second
 )
 
 const strictThirdPartyErrorBodyLimit = 4 << 10
@@ -96,15 +106,46 @@ func (s *GatewayService) StrictThirdPartyEnabled() bool {
 	return ok
 }
 
+func strictThirdPartyTimeouts(timeoutSeconds int) (header, stall time.Duration) {
+	if timeoutSeconds > 0 {
+		d := time.Duration(timeoutSeconds) * time.Second
+		return d, d
+	}
+	return strictThirdPartyDefaultHeaderTimeout, strictThirdPartyDefaultStallTimeout
+}
+
 func (s *GatewayService) strictThirdPartyHTTPClient() *http.Client {
 	if s != nil && s.strictThirdPartyHTTP != nil {
-		return s.strictThirdPartyHTTP
+		client := s.strictThirdPartyHTTP
+		if client.CheckRedirect == nil {
+			clone := *client
+			clone.CheckRedirect = refuseStrictThirdPartyRedirect
+			return &clone
+		}
+		return client
 	}
-	timeout := time.Duration(0)
-	if s != nil && s.cfg != nil && s.cfg.Gateway.StrictSessionBinding.ThirdParty.TimeoutSeconds > 0 {
-		timeout = time.Duration(s.cfg.Gateway.StrictSessionBinding.ThirdParty.TimeoutSeconds) * time.Second
+	headerTimeout, _ := strictThirdPartyTimeouts(0)
+	if s != nil && s.cfg != nil {
+		headerTimeout, _ = strictThirdPartyTimeouts(s.cfg.Gateway.StrictSessionBinding.ThirdParty.TimeoutSeconds)
 	}
-	return &http.Client{Timeout: timeout}
+	return &http.Client{
+		// Timeout 为 0：不按整段响应体计时，避免截断仍在输出的长流。
+		Timeout: 0,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout: strictThirdPartyDialTimeout,
+			}).DialContext,
+			TLSHandshakeTimeout:   strictThirdPartyDialTimeout,
+			ResponseHeaderTimeout: headerTimeout,
+			IdleConnTimeout:       90 * time.Second,
+		},
+		CheckRedirect: refuseStrictThirdPartyRedirect,
+	}
+}
+
+func refuseStrictThirdPartyRedirect(_ *http.Request, _ []*http.Request) error {
+	return errors.New("strict third party redirects are not allowed")
 }
 
 // ForwardStrictThirdParty 把原始 Claude Messages 请求发到独立中转。
@@ -136,28 +177,120 @@ func (s *GatewayService) ForwardStrictThirdParty(ctx context.Context, inbound ht
 		req.Header.Set("Accept", accept)
 	}
 
+	_, stall := strictThirdPartyTimeouts(cfg.TimeoutSeconds)
 	resp, err := s.strictThirdPartyHTTPClient().Do(req)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, strictThirdPartyErrorBodyLimit))
+			_ = resp.Body.Close()
+		}
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	upstreamBody := &strictIdleReader{body: resp.Body, idle: stall}
+	defer func() { _ = upstreamBody.Close() }()
 
-	if resp.StatusCode >= http.StatusBadRequest {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, strictThirdPartyErrorBodyLimit))
+	if resp.StatusCode >= 300 && resp.StatusCode < http.StatusBadRequest {
+		_, _ = io.Copy(io.Discard, io.LimitReader(upstreamBody, strictThirdPartyErrorBodyLimit))
+		return fmt.Errorf("%w: redirect status %d", ErrStrictSessionStore, resp.StatusCode)
+	}
+	// 4xx 原样交给客户端。5xx 仍视为中转失败，不把订阅池错误和第三方错误拼在一起。
+	if resp.StatusCode >= http.StatusInternalServerError {
+		_, _ = io.Copy(io.Discard, io.LimitReader(upstreamBody, strictThirdPartyErrorBodyLimit))
 		return &StrictThirdPartyStatusError{StatusCode: resp.StatusCode}
 	}
-	if contentType := resp.Header.Get("Content-Type"); contentType != "" && w != nil {
-		w.Header().Set("Content-Type", contentType)
-	}
 	if w == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, upstreamBody)
 		return nil
 	}
+	copyStrictThirdPartyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	if err := copyStrictThirdPartyBody(w, upstreamBody); err != nil {
 		return &StrictThirdPartyStatusError{StatusCode: resp.StatusCode, WroteBody: true}
 	}
 	return nil
+}
+
+func copyStrictThirdPartyHeaders(dst, src http.Header) {
+	if contentType := src.Get("Content-Type"); contentType != "" {
+		dst.Set("Content-Type", contentType)
+	}
+	if requestID := src.Get("request-id"); requestID != "" {
+		dst.Set("request-id", requestID)
+	}
+}
+
+func copyStrictThirdPartyBody(w http.ResponseWriter, r io.Reader) error {
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// strictIdleReader 在两次读取之间空闲过久时关闭底层 body，避免长流被总时长截断，也不无限挂起。
+type strictIdleReader struct {
+	body   io.ReadCloser
+	idle   time.Duration
+	mu     sync.Mutex
+	timer  *time.Timer
+	closed atomic.Bool
+}
+
+func (r *strictIdleReader) Read(p []byte) (int, error) {
+	if r.closed.Load() {
+		return 0, context.DeadlineExceeded
+	}
+	r.bump()
+	n, err := r.body.Read(p)
+	if n > 0 {
+		r.bump()
+	}
+	if r.closed.Load() && err == nil {
+		return n, context.DeadlineExceeded
+	}
+	return n, err
+}
+
+func (r *strictIdleReader) bump() {
+	if r.idle <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed.Load() {
+		return
+	}
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.timer = time.AfterFunc(r.idle, func() {
+		r.closed.Store(true)
+		_ = r.body.Close()
+	})
+}
+
+func (r *strictIdleReader) Close() error {
+	r.mu.Lock()
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.mu.Unlock()
+	r.closed.Store(true)
+	return r.body.Close()
 }
 
 func strictThirdPartyMessagesURL(baseURL string) (string, error) {
