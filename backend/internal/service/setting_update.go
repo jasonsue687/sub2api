@@ -559,6 +559,20 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 
+	if settings.StrictSessionBindingOverride {
+		cfg := settings.strictSessionBindingConfig()
+		if err := cfg.NormalizeAndValidate(); err != nil {
+			return nil, infraerrors.BadRequest("INVALID_STRICT_SESSION_BINDING", err.Error())
+		}
+		if err := s.ValidateStrictFallbackGroup(ctx, cfg.FallbackGroupID); err != nil {
+			return nil, err
+		}
+		applyResolvedStrictSessionBinding(settings, cfg)
+		for key, value := range strictSessionBindingUpdates(settings) {
+			updates[key] = value
+		}
+	}
+
 	return updates, nil
 }
 
@@ -751,6 +765,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	// 这里没有它的最新值，重算会把同步结果覆盖成陈旧值。
 	s.InvalidateOpenAICodexClientVersionCache()
 	s.InvalidateClaudeCodeClientVersionCache()
+	s.storeStrictSessionBindingCache(settings)
 	openAIAdvancedSchedulerSettingSF.Forget(openAIAdvancedSchedulerSettingKey)
 	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
 		lowUpstreamRatePriorityEnabled: settings.OpenAILowUpstreamRatePriorityEnabled,

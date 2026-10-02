@@ -191,6 +191,21 @@ type SystemSettings struct {
 	EnableIdentityPatch bool   `json:"enable_identity_patch"`
 	IdentityPatchPrompt string `json:"identity_patch_prompt"`
 
+	// Strict session binding. API key stays internal and is not returned by the admin API.
+	StrictSessionBindingOverride            bool
+	StrictSessionBindingEnabled             bool
+	StrictSessionEndUserHeader              string
+	StrictSessionEndUserHeaderTrusted       bool
+	StrictSessionSessionHeader              string
+	StrictSessionSameAccountRetryLimit      int
+	StrictSessionFallbackOrder              string
+	StrictSessionFallbackGroupID            int64
+	StrictSessionThirdPartyEnabled          bool
+	StrictSessionThirdPartyBaseURL          string
+	StrictSessionThirdPartyAPIKey           string
+	StrictSessionThirdPartyAPIKeyConfigured bool
+	StrictSessionThirdPartyTimeoutSeconds   int
+
 	// Ops monitoring (vNext)
 	OpsMonitoringEnabled         bool
 	OpsRealtimeMonitoringEnabled bool

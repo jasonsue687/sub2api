@@ -366,7 +366,15 @@ func ProvideGatewayService(
 
 // strictSessionLogsRedacted 在严格模式开启时禁止把完整会话身份写入日志。
 func (s *GatewayService) strictSessionLogsRedacted() bool {
-	return s != nil && s.cfg != nil && s.cfg.Gateway.StrictSessionBinding.Enabled
+	if s == nil {
+		return false
+	}
+	if s.settingService != nil {
+		if cfg, ok := s.settingService.StrictSessionBindingOverride(context.Background()); ok {
+			return cfg.Enabled
+		}
+	}
+	return s.cfg != nil && s.cfg.Gateway.StrictSessionBinding.Enabled
 }
 
 func (s *GatewayService) SetStrictSessionBindingStore(store StrictSessionBindingStore) {
@@ -376,9 +384,36 @@ func (s *GatewayService) SetStrictSessionBindingStore(store StrictSessionBinding
 	s.strictSessionStore = store
 }
 
+// EffectiveStrictSessionBinding 返回本次请求生效的严格绑定配置。
+// 管理员在后台保存过后以数据库为准，并且不需要重启；尚未保存过时使用 yaml / 环境变量。
+func (s *GatewayService) EffectiveStrictSessionBinding(ctx context.Context) config.GatewayStrictSessionBindingConfig {
+	base := config.GatewayStrictSessionBindingConfig{}
+	if s != nil && s.cfg != nil {
+		base = s.cfg.Gateway.StrictSessionBinding
+	}
+	if s == nil || s.settingService == nil {
+		return base
+	}
+	override, ok := s.settingService.StrictSessionBindingOverride(ctx)
+	if !ok {
+		return base
+	}
+	return override
+}
+
 // PrepareStrictSession 解析身份并读取已有绑定。存储读失败不会变成“新会话”。
 func (s *GatewayService) PrepareStrictSession(ctx context.Context, in StrictSessionIdentityInput) (*StrictSessionPlan, error) {
-	plan, err := ResolveStrictSessionPlan(s.cfg, in)
+	cfg := s.cfg
+	if s != nil {
+		effective := s.EffectiveStrictSessionBinding(ctx)
+		copied := config.Config{}
+		if s.cfg != nil {
+			copied = *s.cfg
+		}
+		copied.Gateway.StrictSessionBinding = effective
+		cfg = &copied
+	}
+	plan, err := ResolveStrictSessionPlan(cfg, in)
 	if err != nil || plan == nil || !plan.Active {
 		return plan, err
 	}

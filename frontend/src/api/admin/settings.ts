@@ -611,6 +611,20 @@ export interface SystemSettings {
   enable_identity_patch: boolean;
   identity_patch_prompt: string;
 
+  // Strict Claude Messages session binding. The API key is never returned.
+  strict_session_binding_source: "database" | "config" | string;
+  strict_session_binding_enabled: boolean;
+  strict_session_end_user_header: string;
+  strict_session_end_user_header_trusted: boolean;
+  strict_session_session_header: string;
+  strict_session_same_account_retry_limit: number;
+  strict_session_fallback_order: "group_first" | "third_party_first" | string;
+  strict_session_fallback_group_id: number;
+  strict_session_third_party_enabled: boolean;
+  strict_session_third_party_base_url: string;
+  strict_session_third_party_api_key_configured: boolean;
+  strict_session_third_party_timeout_seconds: number;
+
   // Ops Monitoring (vNext)
   ops_monitoring_enabled: boolean;
   ops_realtime_monitoring_enabled: boolean;
@@ -946,6 +960,17 @@ export interface UpdateSettingsRequest {
   account_scheduling_thresholds?: AccountSchedulingThresholdsMap;
   enable_identity_patch?: boolean;
   identity_patch_prompt?: string;
+  strict_session_binding_enabled?: boolean;
+  strict_session_end_user_header?: string;
+  strict_session_end_user_header_trusted?: boolean;
+  strict_session_session_header?: string;
+  strict_session_same_account_retry_limit?: number;
+  strict_session_fallback_order?: string;
+  strict_session_fallback_group_id?: number;
+  strict_session_third_party_enabled?: boolean;
+  strict_session_third_party_base_url?: string;
+  strict_session_third_party_api_key?: string;
+  strict_session_third_party_timeout_seconds?: number;
   ops_monitoring_enabled?: boolean;
   ops_realtime_monitoring_enabled?: boolean;
   ops_query_mode_default?: "auto" | "raw" | "preagg" | string;

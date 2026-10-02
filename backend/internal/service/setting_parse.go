@@ -176,8 +176,20 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyFallbackModelGemini:      "gemini-2.5-pro",
 		SettingKeyFallbackModelAntigravity: "gemini-2.5-pro",
 		// Identity patch defaults
-		SettingKeyEnableIdentityPatch: "true",
-		SettingKeyIdentityPatchPrompt: "",
+		SettingKeyEnableIdentityPatch:                   "true",
+		SettingKeyIdentityPatchPrompt:                   "",
+		SettingKeyStrictSessionBindingOverride:          "false",
+		SettingKeyStrictSessionBindingEnabled:           "false",
+		SettingKeyStrictSessionEndUserHeader:            "",
+		SettingKeyStrictSessionEndUserHeaderTrusted:     "false",
+		SettingKeyStrictSessionSessionHeader:            "X-Session-Id",
+		SettingKeyStrictSessionSameAccountRetryLimit:    "-1",
+		SettingKeyStrictSessionFallbackOrder:            config.StrictFallbackOrderGroupFirst,
+		SettingKeyStrictSessionFallbackGroupID:          "0",
+		SettingKeyStrictSessionThirdPartyEnabled:        "false",
+		SettingKeyStrictSessionThirdPartyBaseURL:        "",
+		SettingKeyStrictSessionThirdPartyAPIKey:         "",
+		SettingKeyStrictSessionThirdPartyTimeoutSeconds: "0",
 
 		// Ops monitoring defaults (vNext)
 		SettingKeyOpsMonitoringEnabled:         "true",
@@ -782,6 +794,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		result.EnableIdentityPatch = true
 	}
 	result.IdentityPatchPrompt = settings[SettingKeyIdentityPatchPrompt]
+	applyStrictSessionBindingSettings(result, settings)
 
 	// Ops monitoring settings (default: enabled, fail-open)
 	result.OpsMonitoringEnabled = !isFalseSettingValue(settings[SettingKeyOpsMonitoringEnabled])

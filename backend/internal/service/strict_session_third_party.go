@@ -89,20 +89,17 @@ func (s *GatewayService) SetStrictThirdPartyHTTPClient(client *http.Client) {
 	s.strictThirdPartyHTTP = client
 }
 
-func (s *GatewayService) strictThirdPartyConfig() (config.GatewayStrictThirdPartyConfig, bool) {
-	if s == nil || s.cfg == nil || !s.cfg.Gateway.StrictSessionBinding.Enabled {
-		return config.GatewayStrictThirdPartyConfig{}, false
+func (s *GatewayService) strictThirdPartyConfig(ctx context.Context) (config.GatewayStrictThirdPartyConfig, bool) {
+	cfg := s.EffectiveStrictSessionBinding(ctx)
+	if !cfg.Enabled || !StrictThirdPartyConfigured(cfg.ThirdParty) {
+		return cfg.ThirdParty, false
 	}
-	cfg := s.cfg.Gateway.StrictSessionBinding.ThirdParty
-	if !cfg.Enabled || strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.APIKey) == "" {
-		return cfg, false
-	}
-	return cfg, true
+	return cfg.ThirdParty, true
 }
 
 // StrictThirdPartyEnabled 报告进程内独立中转是否可用。
 func (s *GatewayService) StrictThirdPartyEnabled() bool {
-	_, ok := s.strictThirdPartyConfig()
+	_, ok := s.strictThirdPartyConfig(context.Background())
 	return ok
 }
 
@@ -114,7 +111,7 @@ func strictThirdPartyTimeouts(timeoutSeconds int) (header, stall time.Duration) 
 	return strictThirdPartyDefaultHeaderTimeout, strictThirdPartyDefaultStallTimeout
 }
 
-func (s *GatewayService) strictThirdPartyHTTPClient() *http.Client {
+func (s *GatewayService) strictThirdPartyHTTPClient(timeoutSeconds int) *http.Client {
 	if s != nil && s.strictThirdPartyHTTP != nil {
 		client := s.strictThirdPartyHTTP
 		if client.CheckRedirect == nil {
@@ -124,10 +121,7 @@ func (s *GatewayService) strictThirdPartyHTTPClient() *http.Client {
 		}
 		return client
 	}
-	headerTimeout, _ := strictThirdPartyTimeouts(0)
-	if s != nil && s.cfg != nil {
-		headerTimeout, _ = strictThirdPartyTimeouts(s.cfg.Gateway.StrictSessionBinding.ThirdParty.TimeoutSeconds)
-	}
+	headerTimeout, _ := strictThirdPartyTimeouts(timeoutSeconds)
 	return &http.Client{
 		// Timeout 为 0：不按整段响应体计时，避免截断仍在输出的长流。
 		Timeout: 0,
@@ -151,8 +145,17 @@ func refuseStrictThirdPartyRedirect(_ *http.Request, _ []*http.Request) error {
 // ForwardStrictThirdParty 把原始 Claude Messages 请求发到独立中转。
 // 不使用订阅账号凭据，也不改写会话绑定。
 func (s *GatewayService) ForwardStrictThirdParty(ctx context.Context, inbound http.Header, body []byte, w http.ResponseWriter) error {
-	cfg, ok := s.strictThirdPartyConfig()
+	cfg, ok := s.strictThirdPartyConfig(ctx)
 	if !ok {
+		return fmt.Errorf("%w: third party is not configured", ErrStrictSessionStore)
+	}
+	return s.ForwardStrictThirdPartyConfig(ctx, cfg, inbound, body, w)
+}
+
+// ForwardStrictThirdPartyConfig 使用请求开始时快照的中转配置转发。
+// 不使用订阅账号凭据，也不改写会话绑定。
+func (s *GatewayService) ForwardStrictThirdPartyConfig(ctx context.Context, cfg config.GatewayStrictThirdPartyConfig, inbound http.Header, body []byte, w http.ResponseWriter) error {
+	if !StrictThirdPartyConfigured(cfg) {
 		return fmt.Errorf("%w: third party is not configured", ErrStrictSessionStore)
 	}
 	endpoint, err := strictThirdPartyMessagesURL(cfg.BaseURL)
@@ -178,7 +181,7 @@ func (s *GatewayService) ForwardStrictThirdParty(ctx context.Context, inbound ht
 	}
 
 	_, stall := strictThirdPartyTimeouts(cfg.TimeoutSeconds)
-	resp, err := s.strictThirdPartyHTTPClient().Do(req)
+	resp, err := s.strictThirdPartyHTTPClient(cfg.TimeoutSeconds).Do(req)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, strictThirdPartyErrorBodyLimit))

@@ -389,6 +389,41 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.IdentityPatchPrompt != after.IdentityPatchPrompt {
 		changed = append(changed, "identity_patch_prompt")
 	}
+	if after.StrictSessionBindingOverride {
+		if before.StrictSessionBindingEnabled != after.StrictSessionBindingEnabled {
+			changed = append(changed, "strict_session_binding_enabled")
+		}
+		if before.StrictSessionEndUserHeader != after.StrictSessionEndUserHeader {
+			changed = append(changed, "strict_session_end_user_header")
+		}
+		if before.StrictSessionEndUserHeaderTrusted != after.StrictSessionEndUserHeaderTrusted {
+			changed = append(changed, "strict_session_end_user_header_trusted")
+		}
+		if before.StrictSessionSessionHeader != after.StrictSessionSessionHeader {
+			changed = append(changed, "strict_session_session_header")
+		}
+		if before.StrictSessionSameAccountRetryLimit != after.StrictSessionSameAccountRetryLimit {
+			changed = append(changed, "strict_session_same_account_retry_limit")
+		}
+		if before.StrictSessionFallbackOrder != after.StrictSessionFallbackOrder {
+			changed = append(changed, "strict_session_fallback_order")
+		}
+		if before.StrictSessionFallbackGroupID != after.StrictSessionFallbackGroupID {
+			changed = append(changed, "strict_session_fallback_group_id")
+		}
+		if before.StrictSessionThirdPartyEnabled != after.StrictSessionThirdPartyEnabled {
+			changed = append(changed, "strict_session_third_party_enabled")
+		}
+		if before.StrictSessionThirdPartyBaseURL != after.StrictSessionThirdPartyBaseURL {
+			changed = append(changed, "strict_session_third_party_base_url")
+		}
+		if before.StrictSessionThirdPartyAPIKey != after.StrictSessionThirdPartyAPIKey {
+			changed = append(changed, "strict_session_third_party_api_key")
+		}
+		if before.StrictSessionThirdPartyTimeoutSeconds != after.StrictSessionThirdPartyTimeoutSeconds {
+			changed = append(changed, "strict_session_third_party_timeout_seconds")
+		}
+	}
 	if before.OpsMonitoringEnabled != after.OpsMonitoringEnabled {
 		changed = append(changed, "ops_monitoring_enabled")
 	}

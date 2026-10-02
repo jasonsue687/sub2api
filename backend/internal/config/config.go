@@ -1505,10 +1505,23 @@ type GatewayStrictSessionBindingConfig struct {
 	// SameAccountRetryLimit 限制原账号上的可安全重试次数。
 	// 0 禁用同账号重试。大于 0 时收紧上限。-1 沿用账号的 pool_mode_retry_count。
 	SameAccountRetryLimit int `mapstructure:"same_account_retry_limit"`
-	// ThirdParty 是独立于订阅账号池的中转目标。未启用时返回可识别错误，
-	// 由外层 New API 转到指定第三方渠道。
+	// FallbackOrder 决定原账号不能承接时先尝试哪个回退目标。
+	// group_first（默认）先走兜底分组，失败且响应未写出时再走第三方。
+	// third_party_first 顺序相反。只配置了一个目标时，另一个会被跳过。
+	FallbackOrder string `mapstructure:"fallback_order"`
+	// FallbackGroupID 是 Sub2API 内的兜底分组。0 表示不启用。
+	// 请求所属分组与它相同时，该请求不会使用这个目标，也不会回到原分组账号池。
+	FallbackGroupID int64 `mapstructure:"fallback_group_id"`
+	// ThirdParty 是独立于订阅账号池的中转目标。
 	ThirdParty GatewayStrictThirdPartyConfig `mapstructure:"third_party"`
 }
+
+const (
+	// StrictFallbackOrderGroupFirst 先尝试兜底分组，再尝试第三方。
+	StrictFallbackOrderGroupFirst = "group_first"
+	// StrictFallbackOrderThirdPartyFirst 先尝试第三方，再尝试兜底分组。
+	StrictFallbackOrderThirdPartyFirst = "third_party_first"
+)
 
 // GatewayStrictThirdPartyConfig 是严格绑定失败后的独立中转，不会进入订阅账号池。
 type GatewayStrictThirdPartyConfig struct {
@@ -1536,13 +1549,25 @@ func (c *GatewayStrictSessionBindingConfig) NormalizeAndValidate() error {
 	}
 	c.EndUserHeader = strings.TrimSpace(c.EndUserHeader)
 	c.SessionHeader = strings.TrimSpace(c.SessionHeader)
+	c.FallbackOrder = strings.TrimSpace(c.FallbackOrder)
 	c.ThirdParty.BaseURL = strings.TrimSpace(c.ThirdParty.BaseURL)
 	c.ThirdParty.APIKey = strings.TrimSpace(c.ThirdParty.APIKey)
+	if c.FallbackOrder == "" {
+		c.FallbackOrder = StrictFallbackOrderGroupFirst
+	}
 	if !c.Enabled {
 		return nil
 	}
 	if c.SameAccountRetryLimit < -1 {
 		return fmt.Errorf("same_account_retry_limit must be -1, 0, or positive")
+	}
+	switch c.FallbackOrder {
+	case StrictFallbackOrderGroupFirst, StrictFallbackOrderThirdPartyFirst:
+	default:
+		return fmt.Errorf("fallback_order must be %s or %s", StrictFallbackOrderGroupFirst, StrictFallbackOrderThirdPartyFirst)
+	}
+	if c.FallbackGroupID < 0 {
+		return fmt.Errorf("fallback_group_id must be >= 0")
 	}
 	if err := validateOptionalHTTPHeaderName(c.EndUserHeader); err != nil {
 		return fmt.Errorf("end_user_header: %w", err)
@@ -2535,6 +2560,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.strict_session_binding.end_user_header_trusted", false)
 	viper.SetDefault("gateway.strict_session_binding.session_header", "X-Session-Id")
 	viper.SetDefault("gateway.strict_session_binding.same_account_retry_limit", -1)
+	viper.SetDefault("gateway.strict_session_binding.fallback_order", StrictFallbackOrderGroupFirst)
+	viper.SetDefault("gateway.strict_session_binding.fallback_group_id", 0)
 	viper.SetDefault("gateway.strict_session_binding.third_party.enabled", false)
 	viper.SetDefault("gateway.strict_session_binding.third_party.base_url", "")
 	viper.SetDefault("gateway.strict_session_binding.third_party.api_key", "")

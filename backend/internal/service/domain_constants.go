@@ -456,6 +456,20 @@ const (
 	SettingKeyEnableIdentityPatch = "enable_identity_patch"
 	SettingKeyIdentityPatchPrompt = "identity_patch_prompt"
 
+	// Strict Claude Messages session binding. Override=false means yaml/env still wins.
+	SettingKeyStrictSessionBindingOverride          = "strict_session_binding_override"
+	SettingKeyStrictSessionBindingEnabled           = "strict_session_binding_enabled"
+	SettingKeyStrictSessionEndUserHeader            = "strict_session_end_user_header"
+	SettingKeyStrictSessionEndUserHeaderTrusted     = "strict_session_end_user_header_trusted"
+	SettingKeyStrictSessionSessionHeader            = "strict_session_session_header"
+	SettingKeyStrictSessionSameAccountRetryLimit    = "strict_session_same_account_retry_limit"
+	SettingKeyStrictSessionFallbackOrder            = "strict_session_fallback_order"
+	SettingKeyStrictSessionFallbackGroupID          = "strict_session_fallback_group_id"
+	SettingKeyStrictSessionThirdPartyEnabled        = "strict_session_third_party_enabled"
+	SettingKeyStrictSessionThirdPartyBaseURL        = "strict_session_third_party_base_url"
+	SettingKeyStrictSessionThirdPartyAPIKey         = "strict_session_third_party_api_key"
+	SettingKeyStrictSessionThirdPartyTimeoutSeconds = "strict_session_third_party_timeout_seconds"
+
 	// =========================
 	// Ops Monitoring (vNext)
 	// =========================

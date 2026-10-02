@@ -156,6 +156,9 @@ type SettingService struct {
 
 	channelMonitorRuntimeListenersMu sync.Mutex
 	channelMonitorRuntimeListeners   []func()
+
+	// strictSessionBindingCache 是管理页保存后的严格会话配置。请求热路径只读这份缓存。
+	strictSessionBindingCache atomic.Value // *cachedStrictSessionBinding
 }
 
 // DefaultPlatformQuotaSetting 单 platform 三档限额（nil = 沿用上层；0 = 显式禁用；>0 = 上限）

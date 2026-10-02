@@ -117,7 +117,7 @@ func TestDispatchStrictFallbackDoesNotCallThirdPartyAfterStreamStarted(t *testin
 	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
 	gw := &service.GatewayService{}
 	// cfg is unexported; construct through NewGatewayService so the third-party client is wired.
-	gw = newStrictGateway(cfg, nil, nil)
+	gw = newStrictGateway(cfg, nil, nil, nil)
 	require.True(t, gw.StrictThirdPartyEnabled())
 	h := &GatewayHandler{gatewayService: gw, cfg: cfg}
 
@@ -144,10 +144,10 @@ func TestDispatchStrictFallbackDoesNotCallThirdPartyAfterStreamStarted(t *testin
 	})
 }
 
-func newStrictGateway(cfg *config.Config, repo service.AccountRepository, snapshot *service.SchedulerSnapshotService) *service.GatewayService {
+func newStrictGateway(cfg *config.Config, repo service.AccountRepository, groups service.GroupRepository, snapshot *service.SchedulerSnapshotService) *service.GatewayService {
 	return service.NewGatewayService(
 		repo,
-		nil,
+		groups,
 		nil,
 		nil,
 		nil,
@@ -184,11 +184,20 @@ func newStrictMessagesHandler(t *testing.T, cfg *config.Config, group *service.G
 
 func newStrictMessagesHandlerWithCache(t *testing.T, cfg *config.Config, group *service.Group, cache *fakeSchedulerCache, repo service.AccountRepository, store service.StrictSessionBindingStore) (*GatewayHandler, func()) {
 	t.Helper()
+	return newStrictMessagesHandlerWithGroups(t, cfg, group, nil, cache, repo, store)
+}
+
+func newStrictMessagesHandlerWithGroups(t *testing.T, cfg *config.Config, group *service.Group, groups map[int64]*service.Group, cache *fakeSchedulerCache, repo service.AccountRepository, store service.StrictSessionBindingStore) (*GatewayHandler, func()) {
+	t.Helper()
 	if cfg == nil {
 		cfg = &config.Config{RunMode: config.RunModeSimple}
 	}
 	snapshot := service.NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
-	gw := newStrictGateway(cfg, repo, snapshot)
+	groupRepo := &fakeGroupRepo{group: group}
+	if groups != nil {
+		groupRepo.byID = groups
+	}
+	gw := newStrictGateway(cfg, repo, groupRepo, snapshot)
 	gw.SetStrictSessionBindingStore(store)
 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	h := &GatewayHandler{
@@ -421,3 +430,132 @@ func (r *strictMessagesAccountRepo) ListShadowsByParent(context.Context, int64) 
 }
 
 var _ service.AccountRepository = (*strictMessagesAccountRepo)(nil)
+
+func TestMessagesStrictFallbackGroupDoesNotRewriteBinding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originID := int64(3101)
+	fallbackID := int64(3201)
+	origin := strictHTTPGroup(originID)
+	fallback := strictHTTPGroup(fallbackID)
+	bound := strictHTTPAccount(1301, originID, "bound")
+	sibling := strictHTTPAccount(1302, originID, "sibling")
+	fallbackAccount := strictHTTPAccount(1303, fallbackID, "fallback")
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_third"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.StrictSessionBinding.Enabled = true
+	cfg.Gateway.StrictSessionBinding.FallbackOrder = config.StrictFallbackOrderGroupFirst
+	cfg.Gateway.StrictSessionBinding.FallbackGroupID = fallbackID
+	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
+	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL
+	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
+
+	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, sibling, fallbackAccount}}
+	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{
+		bound.ID: bound, sibling.ID: sibling, fallbackAccount.ID: fallbackAccount,
+	}}
+	store := service.NewMemoryStrictSessionBindingStore()
+	h, cleanup := newStrictMessagesHandlerWithGroups(t, cfg, origin, map[int64]*service.Group{
+		originID: origin, fallbackID: fallback,
+	}, cache, repo, store)
+	defer cleanup()
+
+	first, selected := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	require.Equal(t, bound.ID, selected)
+	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
+
+	resetAt := time.Now().Add(time.Hour)
+	bound.RateLimitResetAt = &resetAt
+	second, selected := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+	require.Equal(t, fallbackAccount.ID, selected)
+	require.Contains(t, second.Body.String(), "New Conversation")
+	require.NotContains(t, second.Body.String(), "msg_third")
+	require.Zero(t, hits)
+	require.NotEqual(t, sibling.ID, selected)
+	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
+
+	bound.RateLimitResetAt = nil
+	third, selected := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusOK, third.Code, third.Body.String())
+	require.Equal(t, bound.ID, selected)
+	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
+}
+
+func TestMessagesStrictFallbackOrderThirdPartyFirst(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originID := int64(3301)
+	fallbackID := int64(3302)
+	origin := strictHTTPGroup(originID)
+	fallback := strictHTTPGroup(fallbackID)
+	bound := strictHTTPAccount(1401, originID, "bound")
+	fallbackAccount := strictHTTPAccount(1402, fallbackID, "fallback")
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_third"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.StrictSessionBinding.Enabled = true
+	cfg.Gateway.StrictSessionBinding.FallbackOrder = config.StrictFallbackOrderThirdPartyFirst
+	cfg.Gateway.StrictSessionBinding.FallbackGroupID = fallbackID
+	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
+	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL
+	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
+	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, fallbackAccount}}
+	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, fallbackAccount.ID: fallbackAccount}}
+	store := service.NewMemoryStrictSessionBindingStore()
+	h, cleanup := newStrictMessagesHandlerWithGroups(t, cfg, origin, map[int64]*service.Group{
+		originID: origin, fallbackID: fallback,
+	}, cache, repo, store)
+	defer cleanup()
+
+	first, _ := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	resetAt := time.Now().Add(time.Hour)
+	bound.RateLimitResetAt = &resetAt
+	second, selected := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+	require.Contains(t, second.Body.String(), "msg_third")
+	require.NotContains(t, second.Body.String(), "New Conversation")
+	require.Equal(t, 1, hits)
+	require.NotEqual(t, fallbackAccount.ID, selected)
+	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
+}
+
+func TestMessagesStrictFallbackGroupEqualToOriginIsRejected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originID := int64(3401)
+	origin := strictHTTPGroup(originID)
+	bound := strictHTTPAccount(1501, originID, "bound")
+	sibling := strictHTTPAccount(1502, originID, "sibling")
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.StrictSessionBinding.Enabled = true
+	cfg.Gateway.StrictSessionBinding.FallbackGroupID = originID
+	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, sibling}}
+	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, sibling.ID: sibling}}
+	store := service.NewMemoryStrictSessionBindingStore()
+	h, cleanup := newStrictMessagesHandlerWithGroups(t, cfg, origin, map[int64]*service.Group{originID: origin}, cache, repo, store)
+	defer cleanup()
+
+	first, _ := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	resetAt := time.Now().Add(time.Hour)
+	bound.RateLimitResetAt = &resetAt
+	second, selected := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusServiceUnavailable, second.Code, second.Body.String())
+	require.Contains(t, second.Body.String(), "strict_session_fallback_required")
+	require.NotContains(t, second.Body.String(), "New Conversation")
+	require.NotEqual(t, sibling.ID, selected)
+	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
+}

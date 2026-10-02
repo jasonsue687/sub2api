@@ -227,6 +227,19 @@ type UpdateSettingsRequest struct {
 	EnableIdentityPatch bool   `json:"enable_identity_patch"`
 	IdentityPatchPrompt string `json:"identity_patch_prompt"`
 
+	// Strict Claude Messages session binding. Empty API key keeps the stored secret.
+	StrictSessionBindingEnabled           bool   `json:"strict_session_binding_enabled"`
+	StrictSessionEndUserHeader            string `json:"strict_session_end_user_header"`
+	StrictSessionEndUserHeaderTrusted     bool   `json:"strict_session_end_user_header_trusted"`
+	StrictSessionSessionHeader            string `json:"strict_session_session_header"`
+	StrictSessionSameAccountRetryLimit    int    `json:"strict_session_same_account_retry_limit"`
+	StrictSessionFallbackOrder            string `json:"strict_session_fallback_order"`
+	StrictSessionFallbackGroupID          int64  `json:"strict_session_fallback_group_id"`
+	StrictSessionThirdPartyEnabled        bool   `json:"strict_session_third_party_enabled"`
+	StrictSessionThirdPartyBaseURL        string `json:"strict_session_third_party_base_url"`
+	StrictSessionThirdPartyAPIKey         string `json:"strict_session_third_party_api_key"`
+	StrictSessionThirdPartyTimeoutSeconds int    `json:"strict_session_third_party_timeout_seconds"`
+
 	// Ops monitoring (vNext)
 	OpsMonitoringEnabled         *bool   `json:"ops_monitoring_enabled"`
 	OpsRealtimeMonitoringEnabled *bool   `json:"ops_realtime_monitoring_enabled"`
@@ -487,6 +500,7 @@ func settingsAuditRequest(req UpdateSettingsRequest) UpdateSettingsRequest {
 	req.TencentCaptchaCloudSecretID = strings.TrimSpace(req.TencentCaptchaCloudSecretID)
 	req.TencentCaptchaCloudSecretKey = strings.TrimSpace(req.TencentCaptchaCloudSecretKey)
 	req.AliyunCaptchaAccessKeySecret = strings.TrimSpace(req.AliyunCaptchaAccessKeySecret)
+	req.StrictSessionThirdPartyAPIKey = ""
 	return req
 }
 
@@ -1521,6 +1535,17 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
+	var resolvedStrict *config.GatewayStrictSessionBindingConfig
+	if strictSessionPayloadTouched(sentFields) {
+		resolved, err := h.settingService.ResolveStrictSessionBindingSave(c.Request.Context(), previousSettings, strictSessionBindingPatch(req, sentFields))
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		resolvedStrict = &resolved
+		service.KeepStrictSessionBindingKeys(omitted)
+	}
+
 	settings := &service.SystemSettings{
 		// 系统全局 platform quota 默认值（整体替换语义）
 		DefaultPlatformQuotas:       req.DefaultPlatformQuotas,
@@ -2101,6 +2126,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		},
 		ForceEmailOnThirdPartySignup: boolValueOrDefault(req.ForceEmailOnThirdPartySignup, previousAuthSourceDefaults.ForceEmailOnThirdPartySignup),
 	}
+	if resolvedStrict != nil {
+		service.ApplyResolvedStrictSessionBinding(settings, *resolvedStrict)
+	}
 	if err := h.settingService.UpdateSettingsWithAuthSourceDefaultsOmitting(c.Request.Context(), settings, authSourceDefaults, omitted); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -2470,6 +2498,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	} else {
 		payload.DefaultPlatformQuotas = platformQuotas
 	}
+	applyStrictSessionBindingDTO(&payload, h.settingService.StrictSessionBindingAdminView(updatedSettings))
 	response.Success(c, systemSettingsResponseData(payload, updatedAuthSourceDefaults))
 }
 

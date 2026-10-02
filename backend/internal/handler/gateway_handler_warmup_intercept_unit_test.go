@@ -27,8 +27,23 @@ type fakeSchedulerCache struct {
 	accounts []*service.Account
 }
 
-func (f *fakeSchedulerCache) GetSnapshot(_ context.Context, _ service.SchedulerBucket) ([]*service.Account, bool, error) {
-	return f.accounts, true, nil
+func (f *fakeSchedulerCache) GetSnapshot(_ context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
+	if f == nil || bucket.GroupID == 0 {
+		return f.accounts, true, nil
+	}
+	filtered := make([]*service.Account, 0, len(f.accounts))
+	for _, account := range f.accounts {
+		if account == nil {
+			continue
+		}
+		for _, membership := range account.AccountGroups {
+			if membership.GroupID == bucket.GroupID {
+				filtered = append(filtered, account)
+				break
+			}
+		}
+	}
+	return filtered, true, nil
 }
 func (f *fakeSchedulerCache) CaptureBucketWriteToken(_ context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
 	return service.SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
@@ -75,14 +90,28 @@ func (f *fakeSchedulerCache) SetOutboxWatermark(_ context.Context, _ int64) erro
 
 type fakeGroupRepo struct {
 	group *service.Group
+	byID  map[int64]*service.Group
+}
+
+func (f *fakeGroupRepo) lookupGroup(id int64) (*service.Group, error) {
+	if f != nil && f.byID != nil {
+		if group, ok := f.byID[id]; ok {
+			return group, nil
+		}
+		return nil, service.ErrGroupNotFound
+	}
+	if f == nil {
+		return nil, service.ErrGroupNotFound
+	}
+	return f.group, nil
 }
 
 func (f *fakeGroupRepo) Create(context.Context, *service.Group) error { return nil }
-func (f *fakeGroupRepo) GetByID(context.Context, int64) (*service.Group, error) {
-	return f.group, nil
+func (f *fakeGroupRepo) GetByID(_ context.Context, id int64) (*service.Group, error) {
+	return f.lookupGroup(id)
 }
-func (f *fakeGroupRepo) GetByIDLite(context.Context, int64) (*service.Group, error) {
-	return f.group, nil
+func (f *fakeGroupRepo) GetByIDLite(_ context.Context, id int64) (*service.Group, error) {
+	return f.lookupGroup(id)
 }
 func (f *fakeGroupRepo) Update(context.Context, *service.Group) error          { return nil }
 func (f *fakeGroupRepo) Delete(context.Context, int64) error                   { return nil }
