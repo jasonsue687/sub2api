@@ -533,6 +533,29 @@ gateway:
   # Allow failover on selected 400 errors (default: off)
   # 允许在特定 400 错误时进行故障转移（默认：关闭）
   failover_on_400: false
+  # Optional permanent Claude Messages session binding. Default off.
+  # 可选的 Claude Messages 会话永久绑定。默认关闭，关闭时官方调度不变。
+  # 说明见 docs/strict-session-binding.md。
+  strict_session_binding:
+    enabled: false
+    # Trusted end-user header when many users share one Sub2API API key.
+    # Empty means the API key itself is the tenant boundary.
+    # 多用户共用一把 Key 时，由外层网关传入的可信终端用户头。为空则租户边界就是 API Key。
+    end_user_header: ""
+    # Extra stable session header. metadata.user_id and X-Claude-Code-Session-Id are always accepted.
+    # 额外的稳定会话头。metadata.user_id 与 X-Claude-Code-Session-Id 始终有效。
+    session_header: "X-Session-Id"
+    # 0 uses the account pool_mode_retry_count. Same-account retries stay bounded.
+    # 0 表示沿用账号同账号重试上限。
+    same_account_retry_limit: 0
+    # Independent relay. Leave disabled to return strict_session_fallback_required
+    # so an outer New API gateway can route to its own third-party channel.
+    # 独立中转。关闭时返回 strict_session_fallback_required，由外层 New API 转指定渠道。
+    third_party:
+      enabled: false
+      base_url: ""
+      api_key: ""
+      timeout_seconds: 0
   # Scheduling configuration
   # 调度配置
   scheduling:

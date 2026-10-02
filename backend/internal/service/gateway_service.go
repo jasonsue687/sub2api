@@ -799,6 +799,10 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	// strictSessionStore 是 Claude Messages 永久绑定的数据库事实来源。
+	// 为 nil 且功能关闭时不影响官方调度；功能开启但未注入时失败关闭，不重新选号。
+	strictSessionStore    StrictSessionBindingStore
+	strictThirdPartyHTTP  *http.Client
 }
 
 // NewGatewayService creates a new GatewayService

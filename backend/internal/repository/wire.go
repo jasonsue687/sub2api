@@ -63,6 +63,14 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 	return newSchedulerCacheWithChunkSizes(rdb, mgetChunkSize, writeChunkSize)
 }
 
+// ProvideStrictSessionBindingStore 注入永久会话绑定。Redis 只做加速，数据库才是事实来源。
+func ProvideStrictSessionBindingStore(db *sql.DB, rdb *redis.Client) service.StrictSessionBindingStore {
+	return service.NewCachedStrictSessionBindingStore(
+		NewStrictSessionBindingRepository(db),
+		NewStrictSessionBindingCache(rdb),
+	)
+}
+
 // ProviderSet is the Wire provider set for all repositories
 var ProviderSet = wire.NewSet(
 	NewUserRepository,
@@ -109,6 +117,7 @@ var ProviderSet = wire.NewSet(
 
 	// Cache implementations
 	NewGatewayCache,
+	ProvideStrictSessionBindingStore,
 	NewBillingCache,
 	NewAPIKeyCache,
 	NewTempUnschedCache,

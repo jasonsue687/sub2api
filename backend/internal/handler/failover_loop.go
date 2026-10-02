@@ -139,6 +139,11 @@ type FailoverState struct {
 	profitVetoedAccountIDs map[int64]struct{}
 	// profitVetoCount 本次请求累计的利润否决次数，用于 maxProfitVetoAttempts 上限。
 	profitVetoCount int
+
+	// strictBinding 禁止跨订阅账号切换。同账号有界重试仍然允许。
+	strictBinding bool
+	// strictSameAccountRetryLimit > 0 时收紧同账号重试上限。
+	strictSameAccountRetryLimit int
 }
 
 // NewFailoverState 创建 failover 状态
@@ -188,6 +193,24 @@ func (s *FailoverState) allExclusionsAreProfitVetoed() bool {
 	return true
 }
 
+// EnableStrictBinding 打开严格会话绑定的故障处理。
+// 同账号可安全重试仍然生效；重试耗尽后不再切换订阅账号。
+// sameAccountRetryLimit <= 0 时沿用调用方传入的账号级上限。
+func (s *FailoverState) EnableStrictBinding(sameAccountRetryLimit int) {
+	if s == nil {
+		return
+	}
+	s.strictBinding = true
+	if sameAccountRetryLimit > 0 {
+		s.strictSameAccountRetryLimit = sameAccountRetryLimit
+	}
+}
+
+// StrictBinding 报告本次故障转移是否禁止跨账号切换。
+func (s *FailoverState) StrictBinding() bool {
+	return s != nil && s.strictBinding
+}
+
 // HandleFailoverError 处理 UpstreamFailoverError，返回下一步动作。
 // 包含：缓存计费判断、同账号重试、临时封禁、切换计数、Antigravity 延时。
 func (s *FailoverState) HandleFailoverError(
@@ -206,6 +229,10 @@ func (s *FailoverState) HandleFailoverError(
 	s.LastFailoverErr = failoverErr
 	if failoverErr == nil || !failoverErr.ShouldRetryNextAccount() {
 		return FailoverExhausted
+	}
+
+	if s.strictBinding && s.strictSameAccountRetryLimit > 0 && (retryLimit <= 0 || s.strictSameAccountRetryLimit < retryLimit) {
+		retryLimit = s.strictSameAccountRetryLimit
 	}
 
 	// 同账号重试不算切换账号，粘性会话仅在实际切换时强制缓存计费。
@@ -236,6 +263,15 @@ func (s *FailoverState) HandleFailoverError(
 	// 同账号重试用尽，执行临时封禁
 	if failoverErr.RetryableOnSameAccount {
 		gatewayService.TempUnscheduleRetryableError(ctx, accountID, failoverErr)
+	}
+
+	// 严格绑定只保留原账号。重试耗尽后由调用方走指定第三方或返回明确错误。
+	if s.strictBinding {
+		logger.FromContext(ctx).Warn("strict_session.cross_account_switch_blocked",
+			zap.Int64("account_id", accountID),
+			zap.Int("upstream_status", failoverErr.StatusCode),
+		)
+		return FailoverExhausted
 	}
 
 	// 加入失败列表
@@ -278,6 +314,9 @@ func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAc
 	// 不代表账号耗尽，直接按取消终止。
 	if ctx.Err() != nil {
 		return FailoverCanceled
+	}
+	if s.strictBinding {
+		return FailoverExhausted
 	}
 
 	if s.LastFailoverErr != nil &&

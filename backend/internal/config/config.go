@@ -1105,6 +1105,10 @@ type GatewayConfig struct {
 	// Gemini 账户切换最大次数（Gemini 平台单独配置，因 API 限制更严格）
 	MaxAccountSwitchesGemini int `mapstructure:"max_account_switches_gemini"`
 
+	// StrictSessionBinding 可选的 Claude Messages 会话永久绑定。
+	// 默认关闭；关闭时官方调度行为不变。详见 docs/strict-session-binding.md。
+	StrictSessionBinding GatewayStrictSessionBindingConfig `mapstructure:"strict_session_binding"`
+
 	// Antigravity 429 fallback 限流时间（分钟），解析重置时间失败时使用
 	AntigravityFallbackCooldownMinutes int `mapstructure:"antigravity_fallback_cooldown_minutes"`
 
@@ -1484,6 +1488,97 @@ type TLSProfileConfig struct {
 }
 
 // GatewaySchedulingConfig accounts scheduling configuration.
+// GatewayStrictSessionBindingConfig 控制 Claude Messages 会话永久绑定。
+// 绑定写入数据库，不因 TTL、缓存清空或账号删除而消失。
+type GatewayStrictSessionBindingConfig struct {
+	// Enabled 默认 false。关闭时不读取、不写入绑定，调度保持官方行为。
+	Enabled bool `mapstructure:"enabled"`
+	// EndUserHeader 是外层网关在共用一把 Sub2API Key 时传入的可信终端用户标识。
+	// 为空则租户边界就是 API Key。非空时该头必须出现，否则严格模式拒绝请求。
+	EndUserHeader string `mapstructure:"end_user_header"`
+	// SessionHeader 是 metadata.user_id / X-Claude-Code-Session-Id 之外的稳定会话头。
+	// 默认 X-Session-Id。内容摘要永远不会被当作永久会话 ID。
+	SessionHeader string `mapstructure:"session_header"`
+	// SameAccountRetryLimit 限制原账号上的可安全重试次数。
+	// 0 表示沿用账号的 pool_mode_retry_count（同样有上界）。
+	SameAccountRetryLimit int `mapstructure:"same_account_retry_limit"`
+	// ThirdParty 是独立于订阅账号池的中转目标。未启用时返回可识别错误，
+	// 由外层 New API 转到指定第三方渠道。
+	ThirdParty GatewayStrictThirdPartyConfig `mapstructure:"third_party"`
+}
+
+// GatewayStrictThirdPartyConfig 是严格绑定失败后的独立中转，不会进入订阅账号池。
+type GatewayStrictThirdPartyConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	BaseURL        string `mapstructure:"base_url"`
+	APIKey         string `mapstructure:"api_key"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+}
+
+// SessionHeaderOrDefault 返回严格模式接受的附加会话头。
+func (c GatewayStrictSessionBindingConfig) SessionHeaderOrDefault() string {
+	header := strings.TrimSpace(c.SessionHeader)
+	if header == "" {
+		return "X-Session-Id"
+	}
+	return header
+}
+
+// NormalizeAndValidate 在功能开启时检查第三方中转配置。关闭时不改官方调度。
+func (c *GatewayStrictSessionBindingConfig) NormalizeAndValidate() error {
+	if c == nil {
+		return nil
+	}
+	c.EndUserHeader = strings.TrimSpace(c.EndUserHeader)
+	c.SessionHeader = strings.TrimSpace(c.SessionHeader)
+	c.ThirdParty.BaseURL = strings.TrimSpace(c.ThirdParty.BaseURL)
+	c.ThirdParty.APIKey = strings.TrimSpace(c.ThirdParty.APIKey)
+	if !c.Enabled {
+		return nil
+	}
+	if c.SameAccountRetryLimit < 0 {
+		return fmt.Errorf("same_account_retry_limit must be >= 0")
+	}
+	if err := validateOptionalHTTPHeaderName(c.EndUserHeader); err != nil {
+		return fmt.Errorf("end_user_header: %w", err)
+	}
+	if c.SessionHeader != "" {
+		if err := validateOptionalHTTPHeaderName(c.SessionHeader); err != nil {
+			return fmt.Errorf("session_header: %w", err)
+		}
+	}
+	if !c.ThirdParty.Enabled {
+		return nil
+	}
+	if c.ThirdParty.APIKey == "" {
+		return fmt.Errorf("third_party.api_key is required when third_party.enabled")
+	}
+	if c.ThirdParty.TimeoutSeconds < 0 {
+		return fmt.Errorf("third_party.timeout_seconds must be >= 0")
+	}
+	u, err := url.Parse(c.ThirdParty.BaseURL)
+	if err != nil || u == nil || !u.IsAbs() || strings.TrimSpace(u.Host) == "" {
+		return fmt.Errorf("third_party.base_url must be an absolute http(s) url")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("third_party.base_url scheme must be http or https")
+	}
+	if u.User != nil {
+		return fmt.Errorf("third_party.base_url must not embed credentials")
+	}
+	return nil
+}
+
+func validateOptionalHTTPHeaderName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if strings.ContainsAny(name, " \t\r\n:") {
+		return fmt.Errorf("invalid header name %q", name)
+	}
+	return nil
+}
+
 type GatewaySchedulingConfig struct {
 	// 粘性会话排队配置
 	StickySessionMaxWaiting  int           `mapstructure:"sticky_session_max_waiting"`
@@ -2427,6 +2522,14 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.strict_session_binding.enabled", false)
+	viper.SetDefault("gateway.strict_session_binding.end_user_header", "")
+	viper.SetDefault("gateway.strict_session_binding.session_header", "X-Session-Id")
+	viper.SetDefault("gateway.strict_session_binding.same_account_retry_limit", 0)
+	viper.SetDefault("gateway.strict_session_binding.third_party.enabled", false)
+	viper.SetDefault("gateway.strict_session_binding.third_party.base_url", "")
+	viper.SetDefault("gateway.strict_session_binding.third_party.api_key", "")
+	viper.SetDefault("gateway.strict_session_binding.third_party.timeout_seconds", 0)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
@@ -2703,6 +2806,9 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if err := c.Gateway.StrictSessionBinding.NormalizeAndValidate(); err != nil {
+		return fmt.Errorf("gateway.strict_session_binding: %w", err)
+	}
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
 	if err != nil {
 		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)

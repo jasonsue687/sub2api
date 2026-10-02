@@ -291,12 +291,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
-	// [DEBUG-STICKY] 打印会话 hash 生成结果
-	reqLog.Info("sticky.session_hash_generated",
-		zap.String("session_hash", sessionHash),
-		zap.String("metadata_user_id_raw", parsedReq.MetadataUserID),
-	)
-
 	// 获取平台：优先使用强制平台（/antigravity 路由），其次使用 composite 解析出的目标平台，否则使用分组平台
 	platform := ""
 	if forcePlatform, ok := middleware2.GetForcePlatformFromContext(c); ok {
@@ -305,6 +299,19 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		platform = resolvedPlatform
 	} else if apiKey.Group != nil {
 		platform = apiKey.Group.Platform
+	}
+	// 严格绑定启用后，这条路径的粘性调试日志不再记录完整会话 ID 或 metadata.user_id。
+	strictLogRedacted := h.strictSessionEnabled() && platform != service.PlatformGemini
+	if strictLogRedacted {
+		reqLog.Info("sticky.session_hash_generated",
+			zap.Bool("strict_session", true),
+			zap.Bool("has_session_hash", sessionHash != ""),
+		)
+	} else {
+		reqLog.Info("sticky.session_hash_generated",
+			zap.String("session_hash", sessionHash),
+			zap.String("metadata_user_id_raw", parsedReq.MetadataUserID),
+		)
 	}
 	sessionKey := sessionHash
 	if platform == service.PlatformGemini && sessionHash != "" {
@@ -315,9 +322,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	var sessionBoundAccountID int64
 	if sessionKey != "" {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
-		// [DEBUG-STICKY] 打印粘性会话查询结果
+		loggedSessionKey := sessionKey
+		if strictLogRedacted {
+			loggedSessionKey = "redacted"
+		}
 		reqLog.Info("sticky.cache_lookup",
-			zap.String("session_key", sessionKey),
+			zap.String("session_key", loggedSessionKey),
 			zap.Int64("bound_account_id", sessionBoundAccountID),
 		)
 		if sessionBoundAccountID > 0 {
@@ -637,6 +647,26 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	fallbackUsed := false
 
+	strictRT, err := h.prepareStrictClaudeMessages(c, currentAPIKey, platform, parsedReq.MetadataUserID)
+	if err != nil {
+		h.writeStrictSessionSetupError(c, reqLog, err, streamStarted)
+		return
+	}
+	if strictRT.Active && strictRT.Plan != nil && sessionKey != strictRT.Plan.SessionID {
+		// 每轮变化的消息摘要不能当作永久会话键。改用绑定键哈希，并丢掉按摘要预取的粘性账号。
+		sessionKey = strictRT.Plan.BindingKey
+		cleared := service.WithPrefetchedStickySession(c.Request.Context(), 0, derefGroupID(currentAPIKey.GroupID), h.metadataBridgeEnabled())
+		c.Request = c.Request.WithContext(cleared)
+	}
+	if strictRT.Active {
+		hasBoundSession = strictRT.boundAccountID() > 0
+		reqLog.Info("strict_session.enabled",
+			zap.String("session_fp", strictRT.fingerprint()),
+			zap.Int64("bound_account_id", strictRT.boundAccountID()),
+			zap.Bool("bound", hasBoundSession),
+		)
+	}
+
 	// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
 	// 避免单账号分组收到 503 (MODEL_CAPACITY_EXHAUSTED) 时设 29s 限流，导致后续请求连续快速失败。
 	if h.gatewayService.IsSingleAntigravityAccountGroup(c.Request.Context(), currentAPIKey.GroupID) {
@@ -663,6 +693,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
+		if strictRT.Active && strictRT.Plan != nil {
+			fs.EnableStrictBinding(strictRT.Plan.SameAccountRetryLimit)
+		}
 		retryWithFallback := false
 
 		for {
@@ -673,14 +706,21 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 
 			// 选择支持该模型的账号
+			loggedSessionKey := sessionKey
+			if strictRT.Active {
+				loggedSessionKey = strictRT.fingerprint()
+			}
 			reqLog.Info("sticky.selecting_account",
-				zap.String("session_key", sessionKey),
+				zap.String("session_key", loggedSessionKey),
 				zap.Int64("sticky_bound_account_id", sessionBoundAccountID),
 				zap.Bool("has_bound_session", hasBoundSession),
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
 			)
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			selection, err := h.selectMessageAccount(c, strictRT, currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
 			if err != nil {
+				if h.handleStrictSelectFailure(c, strictRT, reqLog, err, body, streamStarted) {
+					return
+				}
 				if failoverClientGone(c) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
 					return
@@ -762,6 +802,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("model", reqModel),
 						zap.String("platform", platform),
 					)
+					if strictRT.Active {
+						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, body, streamStarted, c.Writer.Size())
+						return
+					}
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
 					return
 				}
@@ -774,6 +818,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 					)
+					if strictRT.Active {
+						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, body, streamStarted, c.Writer.Size())
+						return
+					}
 					h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", gatewayQueueFullCode, "Too many pending requests, please retry later", streamStarted)
 					return
 				}
@@ -798,6 +846,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if err != nil {
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
+					if strictRT.Active {
+						h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, body, streamStarted, c.Writer.Size())
+						return
+					}
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
@@ -812,6 +864,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					accountReleaseFunc()
 				}
 				reqLog.Debug("gateway.account_slot_profit_vetoed", zap.Int64("account_id", account.ID), zap.String("reason", reason))
+				if strictRT.Active {
+					h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "profit_control", true, body, streamStarted, c.Writer.Size())
+					return
+				}
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
 					reqLog.Warn("gateway.profit_veto_attempts_exhausted", zap.Int("profit_veto_count", fs.ProfitVetoCount()))
 					markOpsRoutingCapacityLimited(c)
@@ -1009,6 +1065,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Any("fallback_group_id", fallbackGroupID),
 						zap.Bool("fallback_used", fallbackUsed),
 					)
+					if strictRT.Active {
+						reqLog.Warn("strict_session.skip_group_fallback",
+							zap.Int64("account_id", account.ID),
+							zap.String("session_fp", strictRT.fingerprint()),
+						)
+						_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+						return
+					}
 					if !fallbackUsed && fallbackGroupID != nil && *fallbackGroupID > 0 {
 						fallbackGroup, err := h.gatewayService.ResolveGroupByID(c.Request.Context(), *fallbackGroupID)
 						if err != nil {
@@ -1057,8 +1121,21 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
 					if c.Writer.Size() != writerSizeBeforeForward {
+						if strictRT.Active {
+							h.respondStrictStreamInterrupted(c, strictRT, reqLog, account.ID, true)
+							return
+						}
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
+					}
+					if strictRT.Active {
+						if h.dispatchStrictFailover(c, fs, strictRT, reqLog, account, failoverErr, body, account.Platform, streamStarted, writerSizeBeforeForward) {
+							return
+						}
+						// 同账号重试：释放本次会话注册后回到原账号，不改选其他订阅账号。
+						h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
+						delete(sessionSlotAccounts, account.ID)
+						continue
 					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
 					switch action {
