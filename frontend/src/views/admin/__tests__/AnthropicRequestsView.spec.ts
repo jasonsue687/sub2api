@@ -29,6 +29,14 @@ describe('Anthropic account monitoring', () => {
     await wrapper.get('[data-testid="mismatch-only"]').setValue(true); await flushPromises()
     expect(query.mock.calls[1][0]).toMatchObject({ account_id: 11, only_mismatch: true, page: 1 })
   })
+  it('queries the full 30-day retention window', async () => {
+    const wrapper = render(); await flushPromises()
+    await wrapper.get('[data-testid="time-window"]').setValue('720')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    const params = query.mock.calls.at(-1)![0]
+    expect(new Date(params.end_time).getTime() - new Date(params.start_time).getTime()).toBe(30 * 24 * 60 * 60 * 1000)
+    expect(params.account_id).toBe(11)
+  })
   it('discards a stale response after changing accounts', async () => {
     let resolve!: (value: AnthropicRequestList) => void
     query.mockReturnValueOnce(new Promise<AnthropicRequestList>(done => { resolve = done }))
