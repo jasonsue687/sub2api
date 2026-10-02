@@ -36,7 +36,7 @@ SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS=11
 
 ## 本地预览与验证
 
-从本仓库根执行（先用 pnpm 10 安装锁文件依赖）：
+从本仓库根执行（先按当前 CI 使用 pnpm 9 安装锁文件依赖）：
 
 ```sh
 cd frontend
@@ -45,6 +45,8 @@ node preview-anthropic-monitor.mjs
 
 只监听 `127.0.0.1:5178`，显著标注全部为合成数据，无生产 API 连接。演示覆盖 cli/local-agent 不一致、匹配、HTTP 429 和传输失败，复用正式页面组件；不作为真实流量证据。
 
-本次验证：包含前端静态资源的 Linux amd64 应用编译成功；前端生产构建、完整前端 lint、页面专项测试 5 项；后端完整 unit 套件、采集 race 测试、传输与 TLS 委托计数测试、查询与参数校验测试。另在临时 PGlite PostgreSQL 引擎中验证 145 条合成记录的全窗口汇总、去重、账号隔离、分页、空结果及 mismatch 过滤。
+历史验证（原始实现基线 `fd80b08c9`，2026-09-27）：包含前端静态资源的 Linux amd64 应用编译成功；前端生产构建、完整前端 lint、页面专项测试 5 项；后端完整 unit 套件、采集 race 测试、传输与 TLS 委托计数测试、查询与参数校验测试。另在临时 PGlite PostgreSQL 引擎中验证 145 条合成记录的全窗口汇总、去重、账号隔离、分页、空结果及 mismatch 过滤。这些历史结果不替代后续基线上的重新验证。
 
-完整 integration 套件已尝试，但本机 Docker 服务不可用，Docker Desktop 首次启动要求管理员权限安装网络组件，未提升权限或继续安装；依赖 testcontainers 的既有 Redis/PostgreSQL 集成测试失败；不宣称这部分通过。生产启用前应在具备 Docker 的 CI/隔离构建环境补跑。此实现没有修改生产环境。
+上述历史验证中，完整 integration 套件因本机 Docker 服务不可用而未通过；不宣称这部分已验证。后续基线应在具备 Docker 的 CI/隔离构建环境补跑。
+
+2026-10-02 将原始补丁 `67c2b96fa` 移植到 fork 的 `main` 基线 `458b92abd`，用于合并请求审阅；本次移植没有部署或修改生产服务。该基线上的验证结果以合并请求和 CI 记录为准。
