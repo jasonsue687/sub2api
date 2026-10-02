@@ -415,6 +415,12 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/anthropic-requests',
+    name: 'AdminAnthropicRequests',
+    component: () => import('@/views/admin/AnthropicRequestsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Anthropic Requests', titleKey: 'admin.anthropicRequests.title' }
+  },
+  {
     path: '/admin/ops',
     name: 'AdminOps',
     component: () => import('@/views/admin/ops/OpsDashboard.vue'),
