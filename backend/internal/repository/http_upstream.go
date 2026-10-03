@@ -28,6 +28,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicaudit"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicmock"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
@@ -179,6 +180,7 @@ type httpUpstreamService struct {
 // 返回:
 //   - service.HTTPUpstream 接口实现
 func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
+	anthropicmock.ArmOutboundHook()
 	return &httpUpstreamService{
 		cfg:     cfg,
 		clients: make(map[string]*upstreamClientEntry),
@@ -304,6 +306,10 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 // doUpstreamRequest owns cancellation for one attempt, without cancelling the
 // caller's context (which may be detached for billing or reused for retries).
 func doUpstreamRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	anthropicmock.ArmOutboundHook()
+	if resp, ok := anthropicmock.Intercept(req); ok {
+		return resp, nil
+	}
 	ctx, cancel := context.WithCancel(req.Context())
 	resp, err := servertiming.Do(client, req.WithContext(ctx))
 	if err != nil {

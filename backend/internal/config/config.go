@@ -1097,6 +1097,11 @@ type GatewayConfig struct {
 	// API-key 账号在客户端未提供 anthropic-beta 时，是否按需自动补齐（默认关闭以保持兼容）
 	InjectBetaForAPIKey bool `mapstructure:"inject_beta_for_apikey"`
 
+	// AnthropicMockEnabled intercepts outbound requests to Anthropic hosts and
+	// returns a mock response. Default false. The admin page can persist an override.
+	// Env: GATEWAY_ANTHROPIC_MOCK_ENABLED or SUB2API_ANTHROPIC_MOCK_ENABLED.
+	AnthropicMockEnabled bool `mapstructure:"anthropic_mock_enabled"`
+
 	// 是否允许对部分 400 错误触发 failover（默认关闭以避免改变语义）
 	FailoverOn400 bool `mapstructure:"failover_on_400"`
 
@@ -2424,6 +2429,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
+	viper.SetDefault("gateway.anthropic_mock_enabled", false)
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)

@@ -32,6 +32,7 @@ export default {
     "ua": "最终 User-Agent",
     "entrypoint": "billing 入口 / 版本",
     "result": "响应 / 耗时",
+    "mock": "模拟拦截",
     "consistency": "一致性检查",
     "actions": "详情 / 对比",
     "count": "次数",

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicmock"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/google/uuid"
@@ -25,6 +26,11 @@ import (
 
 const Component = "audit.anthropic_outbound"
 const MaxBodyBytes = 8 << 20
+
+// MockHeader marks a response that was served by the Anthropic mock interceptor.
+// The value is the reason (switch, forced, or test_run). It is removed before the
+// response is returned to the gateway.
+const MockHeader = "X-Asterflow-Anthropic-Mock"
 
 // RetentionDays is shared by the audit query window and scheduled cleanup.
 const RetentionDays = 30
@@ -92,7 +98,10 @@ type Snapshot struct {
 	ErrorClass         string            `json:"error_class,omitempty"`
 	UpstreamRequestID  string            `json:"upstream_request_id,omitempty"`
 	HeadersMS          int64             `json:"headers_ms"`
+	Mock               bool              `json:"mock,omitempty"`
+	MockReason         string            `json:"mock_reason,omitempty"`
 	accountID          int64
+	relaxed            bool
 	requestID          string
 	clientRequestID    string
 	started            time.Time
@@ -115,20 +124,26 @@ func Header(h http.Header, key string) string {
 }
 
 func Begin(req *http.Request, accountID int64) *Snapshot {
-	if !EnabledForAccount(accountID) || req == nil || req.URL == nil || req.Method != http.MethodPost ||
-		!strings.EqualFold(req.URL.Hostname(), "api.anthropic.com") ||
-		(req.URL.Path != "/v1/messages" && req.URL.Path != "/v1/messages/count_tokens") ||
-		!strings.HasPrefix(strings.ToLower(Header(req.Header, "Authorization")), "bearer ") {
+	mockReason := anthropicmock.Reason(req)
+	eligible := EnabledForAccount(accountID) && req != nil && req.URL != nil && req.Method == http.MethodPost &&
+		strings.EqualFold(req.URL.Hostname(), "api.anthropic.com") &&
+		(req.URL.Path == "/v1/messages" || req.URL.Path == "/v1/messages/count_tokens") &&
+		strings.HasPrefix(strings.ToLower(Header(req.Header, "Authorization")), "bearer ")
+	if mockReason == "" && !eligible {
+		return nil
+	}
+	if req == nil || req.URL == nil {
 		return nil
 	}
 	origin, _ := req.Context().Value(contextKey{}).(Origin)
-	if !origin.Subscription {
+	if mockReason == "" && !origin.Subscription {
 		return nil
 	}
 	started := time.Now()
 	s := &Snapshot{Schema: 1, AttemptID: uuid.NewString(), StartedAt: started.UTC(), Endpoint: req.URL.Path,
 		Headers: map[string]string{}, Parameters: map[string]any{}, BodyState: "unavailable", Consistency: "unknown", Issues: []string{}, accountID: accountID, started: started}
 	s.Origin = origin
+	s.relaxed = mockReason != "" && !eligible
 	if s.Origin.Source == "" {
 		s.Origin.Source = "unspecified"
 	}
@@ -298,6 +313,22 @@ func (s *Snapshot) checkConsistency() {
 func (s *Snapshot) Finish(resp *http.Response, err error) {
 	if s == nil {
 		return
+	}
+	mocked := false
+	reason := ""
+	if resp != nil {
+		reason = strings.TrimSpace(Header(resp.Header, MockHeader))
+		if reason != "" {
+			mocked = true
+			resp.Header.Del(MockHeader)
+		}
+	}
+	if s.relaxed && !mocked {
+		return
+	}
+	if mocked {
+		s.Mock = true
+		s.MockReason = bounded(reason, 32)
 	}
 	s.HeadersMS = time.Since(s.started).Milliseconds()
 	if resp != nil {
