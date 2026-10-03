@@ -105,8 +105,8 @@ func TestSyncBillingHeaderIdentity_SystemShapesAndFieldBoundaries(t *testing.T) 
 		system any
 		paths  []string
 	}{
-		{name: "system_string", system: billing, paths: []string{"system"}},
-		{name: "array_strings", system: []string{plain, billing}, paths: []string{"system.1"}},
+		{name: "system_string", system: billing},
+		{name: "array_strings", system: []string{plain, billing}},
 		{name: "multiple_text_blocks", system: []any{
 			map[string]any{"type": "text", "text": plain, "cache_control": map[string]string{"type": "ephemeral"}},
 			map[string]any{"type": "text", "text": billing},
@@ -120,6 +120,10 @@ func TestSyncBillingHeaderIdentity_SystemShapesAndFieldBoundaries(t *testing.T) 
 			result, err := syncBillingHeaderIdentity(body, ua, 42)
 			require.NoError(t, err)
 			require.Equal(t, original, string(body), "do not mutate the caller's input buffer")
+			if len(tc.paths) == 0 {
+				require.Equal(t, original, string(result), "only object-array billing blocks are synchronized")
+				return
+			}
 			for _, path := range tc.paths {
 				text := gjson.GetBytes(result, path).String()
 				require.Contains(t, text, "cc_version=2.1.284."+computeClaudeCodeFingerprint(body, "2.1.284")+";")
@@ -130,10 +134,70 @@ func TestSyncBillingHeaderIdentity_SystemShapesAndFieldBoundaries(t *testing.T) 
 			for _, path := range []string{"messages", "metadata"} {
 				require.Equal(t, gjson.GetBytes(body, path).Raw, gjson.GetBytes(result, path).Raw)
 			}
-			if len(tc.paths) > 1 || tc.name == "array_strings" {
+			if len(tc.paths) > 1 {
 				require.Equal(t, gjson.GetBytes(body, "system.0").Raw, gjson.GetBytes(result, "system.0").Raw)
 			}
 		})
+	}
+}
+
+func TestBuildOAuthRequest_PreservesNonBlockSystem(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const (
+		billing  = "x-anthropic-billing-header: cc_version=2.1.268.abc; cc_entrypoint=local-agent;"
+		cachedUA = "claude-cli/2.1.284 (external, cli)"
+	)
+	for _, endpoint := range []string{"messages", "count_tokens"} {
+		for _, tc := range []struct {
+			name   string
+			system any
+		}{
+			{name: "string_with_same_named_prompt_fields", system: billing + "\nKeep these literal values: ; cc_entrypoint=local-agent; cc_version=2.1.268.abc;"},
+			{name: "string_with_conflicting_prompt_fields", system: billing + "\nKeep these literal values: ; cc_entrypoint=cli; cc_version=1.0.0;"},
+			{name: "string_with_malformed_billing", system: "x-anthropic-billing-header: cc_version=2.1.268; cc_entrypoint=???;\nThis is ordinary system text."},
+			{name: "string_array", system: []string{billing, "x-anthropic-billing-header: cc_version=1.0.0; cc_entrypoint=cli;"}},
+		} {
+			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
+				resetGatewayForwardingSettingsCacheForTest(t)
+				cache := &stubIdentityCache{fingerprint: &Fingerprint{
+					UserAgent: cachedUA, ClientID: "test-client", UpdatedAt: time.Now().Unix(),
+				}}
+				svc := &GatewayService{cfg: &config.Config{}, identityService: NewIdentityService(cache)}
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/"+endpoint, nil)
+				c.Request.Header.Set("User-Agent", "claude-cli/2.1.268 (external, local-agent, agent-sdk/0.3.268)")
+				body, err := sjson.SetBytes([]byte(`{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hello world"}]}`), "system", tc.system)
+				require.NoError(t, err)
+				account := &Account{ID: 42, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+				var req *http.Request
+				var wireBody []byte
+				if endpoint == "messages" {
+					req, wireBody, err = svc.buildUpstreamRequest(context.Background(), c, account,
+						body, "test-token", "oauth", "claude-haiku-4-5", false, false)
+				} else {
+					req, wireBody, err = svc.buildCountTokensRequest(context.Background(), c, account,
+						body, "test-token", "oauth", "claude-haiku-4-5", false)
+				}
+				require.NoError(t, err, "ordinary system text must not trigger billing conflicts")
+				require.Equal(t, int64(len(wireBody)), req.ContentLength)
+				require.NotNil(t, req.GetBody)
+				retryBody, err := req.GetBody()
+				require.NoError(t, err)
+				retryBytes, err := io.ReadAll(retryBody)
+				require.NoError(t, err)
+				require.NoError(t, retryBody.Close())
+				require.Equal(t, wireBody, retryBytes)
+				transport := &captureRoundTripper{}
+				resp, err := (&http.Client{Transport: transport}).Do(req)
+				require.NoError(t, err)
+				require.NoError(t, resp.Body.Close())
+				require.Equal(t, wireBody, transport.body)
+				require.Equal(t, gjson.GetBytes(body, "system").Raw, gjson.GetBytes(transport.body, "system").Raw)
+				require.Equal(t, cachedUA, transport.ua)
+				require.Equal(t, cachedUA, cache.fingerprint.UserAgent)
+				require.Zero(t, cache.setCalls)
+			})
+		}
 	}
 }
 

@@ -88,38 +88,30 @@ type billingHeaderTextBlock struct {
 	text string
 }
 
-// Keep paths as well as text so validation and rewriting cover the same shapes.
+// Keep validation and rewriting limited to the original object-array billing
+// blocks. A plain system string can mix billing-looking text with instructions.
 func billingHeaderTextBlocks(body []byte) []billingHeaderTextBlock {
 	if !gjson.ValidBytes(body) {
 		return nil
 	}
 	system := gjson.GetBytes(body, "system")
-	if !system.Exists() {
+	if !system.IsArray() {
 		return nil
 	}
 	var blocks []billingHeaderTextBlock
-	appendBlock := func(path, text string) {
-		if strings.HasPrefix(text, "x-anthropic-billing-header:") {
-			blocks = append(blocks, billingHeaderTextBlock{path: path, text: text})
-		}
-	}
-	switch {
-	case system.Type == gjson.String:
-		appendBlock("system", system.String())
-	case system.IsArray():
-		system.ForEach(func(index, item gjson.Result) bool {
-			path := fmt.Sprintf("system.%d", index.Int())
-			switch item.Type {
-			case gjson.String:
-				appendBlock(path, item.String())
-			default:
-				if text := item.Get("text"); text.Exists() && text.Type == gjson.String {
-					appendBlock(path+".text", text.String())
-				}
-			}
+	system.ForEach(func(index, item gjson.Result) bool {
+		if !item.IsObject() {
 			return true
-		})
-	}
+		}
+		text := item.Get("text")
+		if text.Type == gjson.String && strings.HasPrefix(text.String(), "x-anthropic-billing-header:") {
+			blocks = append(blocks, billingHeaderTextBlock{
+				path: fmt.Sprintf("system.%d.text", index.Int()),
+				text: text.String(),
+			})
+		}
+		return true
+	})
 	return blocks
 }
 
