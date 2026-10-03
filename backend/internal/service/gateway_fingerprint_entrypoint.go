@@ -64,9 +64,18 @@ func newFingerprintEntrypointConflict(accountID int64, kind string) error {
 	return &FingerprintEntrypointConflictError{Kind: kind}
 }
 
+// shouldAlignNonMimicOAuthEntrypoint 为真时才调整入口。
+// OAuth mimic 会在后面用模板 UA 覆盖 Header，不能在这里改入口。
+func shouldAlignNonMimicOAuthEntrypoint(tokenType string, mimic bool) bool {
+	return tokenType != "oauth" || !mimic
+}
+
 // alignNonMimicOAuthEntrypoint 在 ApplyFingerprint 之后调整出站 User-Agent。
-// fingerprintUA 只提供账号级版本；入口来自当前请求。mimic 路径不要调用。
-func alignNonMimicOAuthEntrypoint(req *http.Request, clientHeaders http.Header, body []byte, fingerprintUA string, accountID int64) error {
+// fingerprintUA 只提供账号级版本；入口来自当前请求。OAuth mimic 直接返回。
+func alignNonMimicOAuthEntrypoint(req *http.Request, clientHeaders http.Header, body []byte, fingerprintUA string, accountID int64, tokenType string, mimic bool) error {
+	if !shouldAlignNonMimicOAuthEntrypoint(tokenType, mimic) {
+		return nil
+	}
 	version := ExtractCLIVersion(fingerprintUA)
 	if version == "" || req == nil {
 		return nil
@@ -180,8 +189,8 @@ func billingHeaderTexts(body []byte) []string {
 		raw = append(raw, system.String())
 	case system.IsArray():
 		system.ForEach(func(_, item gjson.Result) bool {
-			switch {
-			case item.Type == gjson.String:
+			switch item.Type {
+			case gjson.String:
 				raw = append(raw, item.String())
 			default:
 				if text := item.Get("text"); text.Exists() && text.Type == gjson.String {
