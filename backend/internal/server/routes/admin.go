@@ -85,6 +85,9 @@ func RegisterAdminRoutes(
 		// 运维监控（Ops）
 		registerOpsRoutes(admin, h)
 
+		// Anthropic mock switch, corpus, and one-click replay
+		registerAnthropicMockRoutes(admin)
+
 		// 系统管理
 		registerSystemRoutes(admin, h)
 

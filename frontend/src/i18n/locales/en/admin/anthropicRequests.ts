@@ -32,6 +32,7 @@ export default {
     "ua": "Final User-Agent",
     "entrypoint": "Billing entrypoint / Version",
     "result": "Response / Latency",
+    "mock": "Mock",
     "consistency": "Consistency",
     "actions": "Details / Compare",
     "count": "Count",

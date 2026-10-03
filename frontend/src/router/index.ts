@@ -421,6 +421,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, requiresAdmin: true, title: 'Anthropic Requests', titleKey: 'admin.anthropicRequests.title' }
   },
   {
+    path: '/admin/anthropic-mock',
+    name: 'AdminAnthropicMock',
+    component: () => import('@/views/admin/AnthropicMockView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Anthropic Mock', titleKey: 'admin.anthropicMock.title' }
+  },
+  {
     path: '/admin/ops',
     name: 'AdminOps',
     component: () => import('@/views/admin/ops/OpsDashboard.vue'),

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicmock"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/migrations"
 
@@ -164,6 +165,7 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 		return nil, nil, err
 	}
 
+	anthropicmock.Start(NewAnthropicMockStore(drv.DB()), cfg.Gateway.AnthropicMockEnabled)
 	return client, drv.DB(), nil
 }
 

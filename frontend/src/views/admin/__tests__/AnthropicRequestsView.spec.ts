@@ -59,6 +59,13 @@ describe('Anthropic account monitoring', () => {
     query.mockRejectedValueOnce(new Error('failure')); await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(wrapper.text()).toContain('loadFailed'); expect(wrapper.find('[data-testid="request-123"]').exists()).toBe(false)
   })
+  it('marks an intercepted mock attempt', async () => {
+    const mocked = result()
+    mocked.records[0].audit = { ...audit, mock: true, mock_reason: 'switch' }
+    query.mockResolvedValue(mocked)
+    const wrapper = render(); await flushPromises()
+    expect(wrapper.get('[data-testid="mock-badge"]').text()).toContain('admin.anthropicRequests.mock')
+  })
   it('compares missing fields, false and zero distinctly', () => {
     const rows = comparisonFields(audit, { ...audit, parameters: { temperature: 0 }, cc_entrypoint: 'cli' })
     expect(rows.find(row => row.key === 'parameters.stream')).toMatchObject({ values: [false, undefined], different: true })

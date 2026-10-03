@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicmock"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 
@@ -78,7 +79,7 @@ func instrumentReqClient(client *req.Client) *req.Client {
 		return nil
 	}
 	client.GetTransport().WrapRoundTripFunc(func(rt http.RoundTripper) req.HttpRoundTripFunc {
-		timed := servertiming.WrapRoundTripper(rt)
+		timed := anthropicmock.WrapRoundTripper(servertiming.WrapRoundTripper(rt))
 		return timed.RoundTrip
 	})
 	return client

@@ -23,6 +23,8 @@ export interface AnthropicAudit {
   error_class?: string
   upstream_request_id?: string
   headers_ms: number
+  mock?: boolean
+  mock_reason?: string
 }
 export interface AnthropicRecord {
   id: number
