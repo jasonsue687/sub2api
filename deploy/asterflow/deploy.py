@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from manifest import IMAGE, validate
+from manifest import IMAGE, clean, published
 
 ROOT = Path('/opt/sub2api')
 BASE = ROOT / 'docker-compose.yml'
@@ -109,6 +109,60 @@ def atomic_write(path, data):
     os.replace(temporary, path)
 
 
+def release_state():
+    path = ROOT / 'automation/state.json'
+    if not path.exists():
+        return {'current': None, 'previous': None}
+    state = json.loads(path.read_text())
+    for key in ('current', 'previous'):
+        if state.get(key):
+            published(state[key])
+    return state
+
+
+def rollback_release(info, state):
+    current = state.get('current')
+    previous = state.get('previous')
+    # A failed deployment may have replaced the container without advancing state.
+    target = current if current and info['Config']['Image'] != IMAGE + '@' + current['digest'] else previous
+    return target.get('release_tag', '') if target else ''
+
+
+def record_success(release, directory=None):
+    state = release_state()
+    current = state.get('current')
+    if current and current['digest'] != release['digest']:
+        state['previous'] = current
+    state['current'] = clean(release)
+    state['updated_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if directory:
+        state['backup'] = str(directory)
+    atomic_write(ROOT / 'automation/state.json', (json.dumps(state, indent=2) + '\n').encode())
+
+
+def already_deployed(info, config, release):
+    service = config.get('services', {}).get(APP, {})
+    desired = replacement(release)['services'][APP]
+    return (info['State'].get('Health', {}).get('Status') == 'healthy'
+            and info['Config']['Image'] == desired['image']
+            and service.get('image') == desired['image']
+            and all(service.get('environment', {}).get(k) == v for k, v in desired['environment'].items()))
+
+
+def preflight_result(release, rollback=False):
+    info, config, _, pending = preflight(release, rollback=rollback)
+    state = release_state()
+    return {'status': 'preflight-passed', 'operation': 'rollback' if rollback else 'deploy',
+            'current_image': info['Config']['Image'],
+            'last_successful_release': (state.get('current') or {}).get('release_tag'),
+            'target_release': release['release_tag'], 'candidate_sha': release['sha'],
+            'target_image': IMAGE + '@' + release['digest'], 'pending_migrations': pending,
+            'previous_release': rollback_release(info, state),
+            'deploy_requires_allow_migrations': bool(pending),
+            'would_skip': not pending and already_deployed(info, config, release),
+            'image_pulled': False, 'production_changed': False}
+
+
 def restore_override(previous):
     if previous is None:
         OVERRIDE.unlink(missing_ok=True)
@@ -158,7 +212,7 @@ def backup(directory):
     (directory / 'checksums.json').write_text(json.dumps(checksums, indent=2))
 
 
-def preflight(release):
+def preflight(release, rollback=False):
     if os.uname().nodename != HOST or os.uname().machine != 'x86_64':
         raise DeploymentError('Wrong production host or architecture')
     if OVERRIDE.exists():
@@ -168,8 +222,8 @@ def preflight(release):
         except ValueError as exc:
             raise DeploymentError('Existing Compose override is not managed by this pipeline') from exc
     info = inspect(APP)
-    if info['State'].get('Health', {}).get('Status') != 'healthy':
-        raise DeploymentError('Current application is not healthy; diagnose before releasing')
+    if not rollback and info['State'].get('Health', {}).get('Status') != 'healthy':
+        raise DeploymentError('Current application is not healthy; use a compatible rollback release')
     configured_files = info['Config'].get('Labels', {}).get('com.docker.compose.project.config_files', '')
     expected_files = [str(BASE)] + ([str(OVERRIDE)] if OVERRIDE.exists() else [])
     if configured_files.split(',') != expected_files:
@@ -179,6 +233,8 @@ def preflight(release):
         raise DeploymentError('Running image differs from Compose; resolve deployment drift')
     current = migrations()
     pending = pending_migrations(current, release['migrations'])
+    if rollback and pending:
+        raise DeploymentError('Rollback cannot introduce migrations; choose a database-compatible release')
     settings = json.loads(sql("SELECT COALESCE(json_object_agg(key,value),'{}'::json) FROM settings WHERE key IN ('ops_advanced_settings','ops_monitoring_enabled')"))
     if settings.get('ops_monitoring_enabled') == 'false':
         raise DeploymentError('Enable Ops monitoring in the administrator settings before deploying')
@@ -191,8 +247,14 @@ def preflight(release):
     return info, config, current, pending
 
 
-def deploy(release, registry_user='', registry_token=''):
-    info, old_config, before, pending = preflight(release)
+def deploy(release, registry_user='', registry_token='', rollback=False):
+    info, old_config, before, pending = preflight(release, rollback=rollback)
+    was_healthy = info['State'].get('Health', {}).get('Status') == 'healthy'
+    if not pending and already_deployed(info, old_config, release):
+        wait_healthy(release['version'])
+        record_success(release)
+        return {'status': 'unchanged', 'release_tag': release['release_tag'],
+                'image': IMAGE + '@' + release['digest'], 'production_changed': False}
     if pending and release.get('allow_migrations') is not True:
         raise DeploymentError('New migrations require allow_migrations: ' + ', '.join(pending))
     image = IMAGE + '@' + release['digest']
@@ -210,7 +272,7 @@ def deploy(release, registry_user='', registry_token=''):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     directory = ROOT / 'backups' / ('asterflow-' + stamp + '-' + release['sha'][:12])
     directory.mkdir(mode=0o700, parents=True)
-    (directory / 'release.json').write_text(json.dumps(release, indent=2))
+    (directory / 'release.json').write_text(json.dumps(clean(release), indent=2))
     (directory / 'before-migrations.json').write_text(json.dumps(before, sort_keys=True))
     (directory / 'old-image.txt').write_text(info['Config']['Image'] + '\n' + info['Image'] + '\n')
     deps = {name: (inspect(name)['Id'], inspect(name)['State']['StartedAt']) for name in (POSTGRES, REDIS)}
@@ -221,6 +283,8 @@ def deploy(release, registry_user='', registry_token=''):
         compose('stop', '-t', '60', APP)
         # Final backup is taken with the sole application writer stopped.
         backup(directory)
+        if migrations() != before:
+            raise DeploymentError('Migration history changed during backup; retry preflight')
         changed = True
         atomic_write(OVERRIDE, (json.dumps(replacement(release), indent=2) + '\n').encode())
         check_config_change(old_config, json.loads(compose('config', '--format', 'json')))
@@ -235,22 +299,26 @@ def deploy(release, registry_user='', registry_token=''):
             actual = inspect(name)
             if (actual['Id'], actual['State']['StartedAt']) != identity:
                 raise DeploymentError('Database/cache container unexpectedly changed')
-        result = {'status': 'deployed', 'sha': release['sha'], 'image': image,
+        result = {'status': 'rolled-back' if rollback else 'deployed',
+                  'release_tag': release['release_tag'], 'sha': release['sha'], 'image': image,
                   'backup': str(directory), 'new_migrations': pending,
                   'verification': 'container health, HTTP health, version, migration hashes, unchanged PostgreSQL/Redis',
                   'model_request_test': 'not performed'}
         (directory / 'result.json').write_text(json.dumps(result, indent=2))
+        record_success(release, directory)
         return result
     except BaseException:
         # Never automatically restore a DB or boot an old binary against a possibly
         # partially migrated schema. Keep backups/new data for explicit recovery.
-        safe = not launched
-        if launched and not pending:
+        safe = not launched or not pending
+        if safe:
             try:
                 safe = migrations() == before
             except Exception:
                 safe = False
         recovery = 'manual-recovery-required'
+        if rollback and not was_healthy:
+            safe = False  # Do not automatically restart the known unhealthy release.
         if safe:
             if changed:
                 restore_override(previous)
@@ -270,13 +338,17 @@ def deploy(release, registry_user='', registry_token=''):
 def main():
     os.umask(0o077)
     operation = sys.argv[1] if len(sys.argv) == 2 else ''
-    if operation not in ('status', 'preflight', 'deploy'):
-        raise DeploymentError('Allowed commands: status, preflight, deploy')
+    if operation not in ('status', 'preflight', 'deploy', 'preflight-rollback', 'rollback'):
+        raise DeploymentError('Allowed commands: status, preflight, deploy, preflight-rollback, rollback')
     if os.geteuid() != 0 or os.uname().nodename != HOST:
         raise DeploymentError('Run only through the installed production entrypoint')
     if operation == 'status':
         info = inspect(APP)
-        print(json.dumps({'host': HOST, 'image': info['Config']['Image'], 'health': info['State'].get('Health', {}).get('Status')}))
+        state = release_state()
+        print(json.dumps({'host': HOST, 'image': info['Config']['Image'],
+                          'health': info['State'].get('Health', {}).get('Status'),
+                          'last_successful_release': (state.get('current') or {}).get('release_tag'),
+                          'rollback_release': rollback_release(info, state)}))
         return
     payload = sys.stdin.buffer.read(256 * 1024 + 1)
     if len(payload) > 256 * 1024:
@@ -284,17 +356,13 @@ def main():
     release = json.loads(payload)
     token = release.pop('registry_token', '')
     user = release.pop('registry_user', '')
-    validate(release)
+    published(release)
     with open(ROOT / 'automation/deployment.lock', 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if operation == 'preflight':
-            info, _, _, pending = preflight(release)
-            result = {'status': 'preflight-passed', 'current_image': info['Config']['Image'],
-                      'candidate_sha': release['sha'], 'pending_migrations': pending,
-                      'deploy_requires_allow_migrations': bool(pending),
-                      'image_pulled': False, 'production_changed': False}
+        if operation in ('preflight', 'preflight-rollback'):
+            result = preflight_result(release, rollback=operation == 'preflight-rollback')
         else:
-            result = deploy(release, user, token)
+            result = deploy(release, user, token, rollback=operation == 'rollback')
         print(json.dumps(result))
 
 

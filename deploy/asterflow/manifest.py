@@ -8,6 +8,25 @@ import re
 
 REPOSITORY = "jasonsue687/sub2api"
 IMAGE = "ghcr.io/jasonsue687/sub2api"
+TAG_PATTERN = r"asterflow-v([0-9]+\.[0-9]+\.[0-9]+)-r([1-9][0-9]*)"
+
+
+def validate_tag(tag, version=None):
+    match = re.fullmatch(TAG_PATTERN, tag)
+    if not match or (version is not None and version.split('-asterflow.')[0] != match[1]):
+        raise ValueError("Tag must be asterflow-v<upstream-version>-r<N> and match the build version")
+    return tag
+
+
+def published(data):
+    validate(data)
+    validate_tag(data.get('release_tag', ''), data['version'])
+    return data
+
+
+def clean(data):
+    return {key: data[key] for key in ('schema', 'repository', 'sha', 'digest', 'version',
+            'run_id', 'run_attempt', 'migrations', 'release_tag') if key in data}
 
 
 def validate(data):
