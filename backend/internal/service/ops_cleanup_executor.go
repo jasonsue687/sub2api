@@ -157,6 +157,44 @@ func truncateOpsTable(ctx context.Context, db *sql.DB, table string) (int64, err
 	return count, nil
 }
 
+// cleanupAnthropicCaptures applies the same 30-day retention as outbound audit logs.
+func cleanupAnthropicCaptures(ctx context.Context, db *sql.DB, now time.Time, batchSize int) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	if batchSize <= 0 {
+		batchSize = opsCleanupBatchSize
+	}
+	const query = `
+WITH batch AS (
+  SELECT id FROM anthropic_request_captures
+  WHERE created_at < $1
+  ORDER BY id
+  LIMIT $2
+)
+DELETE FROM anthropic_request_captures
+WHERE id IN (SELECT id FROM batch)`
+	cutoff := now.UTC().Add(-anthropicaudit.RetentionDays * 24 * time.Hour)
+	var total int64
+	for {
+		res, err := db.ExecContext(ctx, query, cutoff, batchSize)
+		if err != nil {
+			if isMissingRelationError(err) {
+				return total, nil
+			}
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n == 0 {
+			return total, nil
+		}
+	}
+}
+
 func isMissingRelationError(err error) bool {
 	if err == nil {
 		return false

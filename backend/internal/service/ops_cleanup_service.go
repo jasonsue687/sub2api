@@ -332,6 +332,9 @@ func (s *OpsCleanupService) runCleanupOnce(ctx context.Context) (opsCleanupDelet
 	if err != nil {
 		return out, err
 	}
+	if _, err = cleanupAnthropicCaptures(ctx, s.db, now, opsCleanupBatchSize); err != nil {
+		return out, err
+	}
 
 	targets := []opsCleanupTarget{
 		{effective.ErrorLogRetentionDays, "ops_error_logs", "created_at", false, &out.errorLogs},
