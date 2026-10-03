@@ -35,6 +35,12 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Test deployment policy and failure recovery
         run: python3 -m unittest discover -s deploy/asterflow -p 'test_*.py'
+      - name: Backend lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+          args: --timeout=30m
+          working-directory: backend
       - name: Backend unit tests
         run: make -C backend test-unit
       - name: Backend integration tests

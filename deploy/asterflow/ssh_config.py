@@ -36,7 +36,7 @@ Host asterflow-prod-account-central-01
   HostName {target}
   HostKeyAlias asterflow-prod-account-central-01
   User ecs-user
-  ProxyJump asterflow-prod-app-01
+  ProxyCommand ssh -F {directory}/config asterflow-prod-app-01
 ''')
 
 

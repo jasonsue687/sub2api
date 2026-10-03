@@ -29,7 +29,7 @@ SSH 固定使用 `asterflow-prod-app-01` 与 `asterflow-prod-account-central-01`
 
 将本目录 `deploy.py` 和 `manifest.py` 安装到中央节点 `/opt/sub2api/automation/`，目录及文件由 root 持有，普通用户不可写。私钥留在 GitHub Environment，公钥采用以下限制：
 
-- 跳板：禁止命令会话，只允许转发到中央节点的 SSH 端口；不允许转发到其他地址。
+- 跳板：`restrict` 禁止 SSH 转发及任意命令；forced command 固定执行 `/usr/bin/nc <中央私网IP> 22`，只提供通向中央 SSH 的字节通道。客户端使用 `ProxyCommand`，不能选择其他目标或建立反向端口转发。
 - 中央：禁止端口/agent/X11 转发与 PTY；forced command 只运行 root 持有的 `deploy.py`，参数作为一个字符串传入后只允许 `status`、`preflight`、`deploy`。不接受远程脚本上传或任意 shell。
 - 此入口具有更新中央应用的权限；管理员修改入口时需重新审阅、安装并验证。业务构建不会自动替换服务器部署脚本。
 
