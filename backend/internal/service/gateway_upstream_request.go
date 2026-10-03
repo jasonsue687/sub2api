@@ -165,10 +165,8 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// 避免另一个客户端留在缓存里的入口后缀和本次 cc_entrypoint 矛盾。
 	if fingerprint != nil {
 		s.identityService.ApplyFingerprint(req, fingerprint)
-		if !(tokenType == "oauth" && mimicClaudeCode) {
-			if err := alignNonMimicOAuthEntrypoint(req, clientHeaders, body, fingerprint.UserAgent, account.ID); err != nil {
-				return nil, nil, err
-			}
+		if err := alignNonMimicOAuthEntrypoint(req, clientHeaders, body, fingerprint.UserAgent, account.ID, tokenType, mimicClaudeCode); err != nil {
+			return nil, nil, err
 		}
 	}
 

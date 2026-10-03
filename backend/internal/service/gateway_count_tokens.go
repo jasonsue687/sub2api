@@ -578,10 +578,8 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	// 非 mimic 路径只沿用账号级版本和稳定标识，入口类型跟当前请求。
 	if ctEnableFP && ctFingerprint != nil {
 		s.identityService.ApplyFingerprint(req, ctFingerprint)
-		if !(tokenType == "oauth" && mimicClaudeCode) {
-			if err := alignNonMimicOAuthEntrypoint(req, clientHeaders, body, ctFingerprint.UserAgent, account.ID); err != nil {
-				return nil, nil, err
-			}
+		if err := alignNonMimicOAuthEntrypoint(req, clientHeaders, body, ctFingerprint.UserAgent, account.ID, tokenType, mimicClaudeCode); err != nil {
+			return nil, nil, err
 		}
 	}
 
