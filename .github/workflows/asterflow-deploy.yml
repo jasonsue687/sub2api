@@ -1,17 +1,18 @@
 name: AsterFlow Deploy
+run-name: ${{ inputs.operation }} ${{ inputs.release_tag || 'previous successful release' }}
 
 on:
   workflow_dispatch:
     inputs:
-      build_run_id:
-        description: 'Successful AsterFlow Build run ID (shown in its summary)'
-        required: true
+      release_tag:
+        description: 'Published AsterFlow tag; leave blank only for rollback to the previous successful release'
+        required: false
         type: string
       operation:
         description: 'Preflight reads production metadata; deploy backs up and replaces the application'
         required: true
         type: choice
-        options: [preflight, deploy]
+        options: [preflight, deploy, preflight-rollback, rollback]
         default: preflight
       allow_migrations:
         description: 'Allow new DB migrations; on failure, no automatic rollback or DB restore'
@@ -30,18 +31,15 @@ concurrency:
 jobs:
   deploy:
     if: github.repository == 'jasonsue687/sub2api' && github.ref == 'refs/heads/asterflow'
-    environment: production
+    environment:
+      name: production
+      deployment: ${{ inputs.operation == 'deploy' || inputs.operation == 'rollback' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Resolve and verify a successful branch build
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
-        run: python3 deploy/asterflow/resolve.py
       - name: Configure isolated deployment SSH identity
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -49,6 +47,12 @@ jobs:
           JUMP_HOST: ${{ vars.DEPLOY_JUMP_HOST }}
           TARGET_HOST: ${{ vars.DEPLOY_TARGET_HOST }}
         run: python3 deploy/asterflow/ssh_config.py
+      - name: Resolve and verify immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          OPERATION: ${{ inputs.operation }}
+        run: python3 deploy/asterflow/resolve.py
       - name: Run production operation
         env:
           OPERATION: ${{ inputs.operation }}
