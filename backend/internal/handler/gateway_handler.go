@@ -234,10 +234,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// Track if we've started streaming (for error handling)
 	streamStarted := false
-	writerSizeAtEntry := 0
-	if c.Writer != nil {
-		writerSizeAtEntry = c.Writer.Size()
-	}
+	writerSizeAtEntry := h.strictMessagesWriterSize(c)
 
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
 	if h.errorPassthroughService != nil {
@@ -304,14 +301,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	} else if apiKey.Group != nil {
 		platform = apiKey.Group.Platform
 	}
-	// 严格绑定启用后，这条路径的粘性调试日志不再记录完整会话 ID 或 metadata.user_id。
-	strictLogRedacted := h.strictSessionEnabled(c) && platform != service.PlatformGemini
-	if strictLogRedacted {
-		reqLog.Info("sticky.session_hash_generated",
-			zap.Bool("strict_session", true),
-			zap.Bool("has_session_hash", sessionHash != ""),
-		)
-	} else {
+	if !h.writeStrictStickySessionHash(c, reqLog, platform, sessionHash, parsedReq.MetadataUserID) {
+		// [DEBUG-STICKY] 打印会话 hash 生成结果
 		reqLog.Info("sticky.session_hash_generated",
 			zap.String("session_hash", sessionHash),
 			zap.String("metadata_user_id_raw", parsedReq.MetadataUserID),
@@ -326,12 +317,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	var sessionBoundAccountID int64
 	if sessionKey != "" {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
-		loggedSessionKey := sessionKey
-		if strictLogRedacted {
-			loggedSessionKey = "redacted"
-		}
+		// [DEBUG-STICKY] 打印粘性会话查询结果
 		reqLog.Info("sticky.cache_lookup",
-			zap.String("session_key", loggedSessionKey),
+			zap.String("session_key", h.strictLoggedSessionKey(c, platform, sessionKey)),
 			zap.Int64("bound_account_id", sessionBoundAccountID),
 		)
 		if sessionBoundAccountID > 0 {
@@ -651,29 +639,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	fallbackUsed := false
 
-	strictRT, err := h.prepareStrictClaudeMessages(c, currentAPIKey, platform, parsedReq.MetadataUserID)
+	strictRT, err := h.beginStrictClaudeMessages(c, reqLog, currentAPIKey, platform, parsedReq.MetadataUserID, &sessionKey, &hasBoundSession, streamStarted)
 	if err != nil {
-		h.writeStrictSessionSetupError(c, reqLog, err, streamStarted)
 		return
-	}
-	if strictRT != nil && strictRT.Plan != nil {
-		if _, forced := middleware2.GetForcePlatformFromContext(c); forced {
-			strictRT.Plan.ForcePlatform = true
-		}
-	}
-	if strictRT.Active && strictRT.Plan != nil && sessionKey != strictRT.Plan.SessionID {
-		// 每轮变化的消息摘要不能当作永久会话键。改用绑定键哈希，并丢掉按摘要预取的粘性账号。
-		sessionKey = strictRT.Plan.BindingKey
-		cleared := service.WithPrefetchedStickySession(c.Request.Context(), 0, derefGroupID(currentAPIKey.GroupID), h.metadataBridgeEnabled())
-		c.Request = c.Request.WithContext(cleared)
-	}
-	if strictRT.Active {
-		hasBoundSession = strictRT.boundAccountID() > 0
-		reqLog.Info("strict_session.enabled",
-			zap.String("session_fp", strictRT.fingerprint()),
-			zap.Int64("bound_account_id", strictRT.boundAccountID()),
-			zap.Bool("bound", hasBoundSession),
-		)
 	}
 
 	// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
@@ -690,11 +658,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 成功请求保持既有空闲超时语义（会话按最后活动时间过期）。
 	sessionSlotAccounts := make(map[int64]*service.Account)
 	upstreamServedSession := false
-	if strictRT != nil {
-		strictRT.activateFallback = func() error {
-			return h.activateStrictFallbackGroup(c, strictRT, &currentAPIKey, &currentSubscription, &sessionKey, &hasBoundSession, &sessionBoundAccountID, &fallbackUsed, sessionSlotAccounts)
-		}
-	}
+	h.bindStrictFallbackActivator(c, strictRT, &currentAPIKey, &currentSubscription, &sessionKey, &hasBoundSession, &sessionBoundAccountID, &fallbackUsed, sessionSlotAccounts)
 	defer func() {
 		if upstreamServedSession {
 			return
@@ -707,9 +671,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
-		if strictRT.locksAccount() && strictRT.Plan != nil {
-			fs.EnableStrictBinding(strictRT.Plan.SameAccountRetryLimit)
-		}
+		h.applyStrictBindingLimit(fs, strictRT)
 		retryWithFallback := false
 
 		for {
@@ -720,24 +682,23 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 
 			// 选择支持该模型的账号
-			loggedSessionKey := sessionKey
-			if strictRT.Active {
-				loggedSessionKey = strictRT.fingerprint()
-			}
 			reqLog.Info("sticky.selecting_account",
-				zap.String("session_key", loggedSessionKey),
+				zap.String("session_key", strictSelectingSessionKey(strictRT, sessionKey)),
 				zap.Int64("sticky_bound_account_id", sessionBoundAccountID),
 				zap.Bool("has_bound_session", hasBoundSession),
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
 			)
-			selection, err := h.selectMessageAccount(c, strictRT, currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			var selection *service.AccountSelectionResult
+			if strictRT.locksAccount() {
+				selection, err = h.selectMessageAccount(c, strictRT, currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			} else {
+				selection, err = h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			}
 			if err != nil {
-				strictSelectAction := h.handleStrictSelectFailure(c, strictRT, reqLog, err, body, streamStarted, writerSizeAtEntry)
-				if strictSelectAction == strictFlowRetryGroup {
-					retryWithFallback = true
-					break
-				}
-				if strictSelectAction == strictFlowStop {
+				if h.strictSelectFailureHandled(c, strictRT, reqLog, err, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
+					if retryWithFallback {
+						break
+					}
 					return
 				}
 				if failoverClientGone(c) {
@@ -821,10 +782,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("model", reqModel),
 						zap.String("platform", platform),
 					)
-					if strictRT.locksAccount() || (strictRT != nil && strictRT.InFallbackGroup) {
-						h.releaseStrictBoundSession(account, sessionKey)
-						if h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry) == strictFlowRetryGroup {
-							retryWithFallback = true
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
+						if retryWithFallback {
 							break
 						}
 						return
@@ -841,10 +800,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 					)
-					if strictRT.locksAccount() || (strictRT != nil && strictRT.InFallbackGroup) {
-						h.releaseStrictBoundSession(account, sessionKey)
-						if h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry) == strictFlowRetryGroup {
-							retryWithFallback = true
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
+						if retryWithFallback {
 							break
 						}
 						return
@@ -873,10 +830,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if err != nil {
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
-					if strictRT.locksAccount() || (strictRT != nil && strictRT.InFallbackGroup) {
-						h.releaseStrictBoundSession(account, sessionKey)
-						if h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry) == strictFlowRetryGroup {
-							retryWithFallback = true
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
+						if retryWithFallback {
 							break
 						}
 						return
@@ -895,19 +850,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					accountReleaseFunc()
 				}
 				reqLog.Debug("gateway.account_slot_profit_vetoed", zap.Int64("account_id", account.ID), zap.String("reason", reason))
-				if strictRT.locksAccount() {
-					h.releaseStrictBoundSession(account, sessionKey)
-					if h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "profit_control", true, true, body, streamStarted, writerSizeAtEntry) == strictFlowRetryGroup {
-						retryWithFallback = true
+				if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "profit_control", true, false, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
+					if retryWithFallback {
 						break
 					}
 					return
 				}
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
 					reqLog.Warn("gateway.profit_veto_attempts_exhausted", zap.Int("profit_veto_count", fs.ProfitVetoCount()))
-					if strictRT != nil && strictRT.InFallbackGroup {
-						if h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "profit_control", true, true, body, streamStarted, writerSizeAtEntry) == strictFlowRetryGroup {
-							retryWithFallback = true
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "profit_control", false, true, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
+						if retryWithFallback {
 							break
 						}
 						return
@@ -1107,12 +1059,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Any("fallback_group_id", fallbackGroupID),
 						zap.Bool("fallback_used", fallbackUsed),
 					)
-					if strictRT.Active {
-						reqLog.Warn("strict_session.skip_group_fallback",
-							zap.Int64("account_id", account.ID),
-							zap.String("session_fp", strictRT.fingerprint()),
-						)
-						_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+					if h.strictPromptTooLongStops(c, strictRT, reqLog, account, promptTooLongErr) {
 						return
 					}
 					if !fallbackUsed && fallbackGroupID != nil && *fallbackGroupID > 0 {
@@ -1162,30 +1109,19 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
-					if strictRT.Active && strictResponseStarted(c, streamStarted, writerSizeAtEntry) {
-						h.respondStrictStreamInterrupted(c, strictRT, reqLog, account.ID, true)
+					switch h.handleStrictUpstreamFailover(c, fs, strictRT, reqLog, account, failoverErr, body, sessionKey, streamStarted, writerSizeAtEntry, writerSizeBeforeForward, sessionSlotAccounts) {
+					case strictFlowStop:
 						return
+					case strictFlowRetryGroup:
+						retryWithFallback = true
+					case strictFlowSameAccount:
+						continue
+					}
+					if retryWithFallback {
+						break
 					}
 					if c.Writer.Size() != writerSizeBeforeForward {
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
-						return
-					}
-					if strictRT.locksAccount() {
-						failoverAction := h.dispatchStrictFailover(c, fs, strictRT, reqLog, account, failoverErr, body, account.Platform, streamStarted, writerSizeAtEntry)
-						if failoverAction == strictFlowRetryGroup {
-							retryWithFallback = true
-							break
-						}
-						if failoverAction == strictFlowStop {
-							return
-						}
-						// 同账号重试：释放本次会话注册后回到原账号，不改选其他订阅账号。
-						h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
-						delete(sessionSlotAccounts, account.ID)
-						continue
-					}
-					if strictRT != nil && strictRT.InFallbackGroup && strictResponseStarted(c, streamStarted, writerSizeAtEntry) {
-						h.respondStrictStreamInterrupted(c, strictRT, reqLog, account.ID, true)
 						return
 					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
@@ -1196,22 +1132,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						delete(sessionSlotAccounts, account.ID)
 						continue
 					case FailoverExhausted:
-						if strictRT != nil && strictRT.InFallbackGroup {
-							if h.dispatchStrictFallback(c, strictRT, reqLog, account.ID, "upstream_exhausted", false, failoverErr != nil && failoverErr.ShouldRetryNextAccount(), body, streamStarted, writerSizeAtEntry) == strictFlowRetryGroup {
-								retryWithFallback = true
-							} else {
-								return
-							}
-						} else {
-							h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
-							return
-						}
+						h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
+						return
 					case FailoverCanceled:
 						failoverClientGone(c)
 						return
-					}
-					if retryWithFallback {
-						break
 					}
 				}
 				upstreamErrorAlreadyCommunicated := gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)

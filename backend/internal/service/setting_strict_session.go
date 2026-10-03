@@ -4,11 +4,50 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
+
+const (
+	// Strict Claude Messages session binding. Override=false means yaml/env still wins.
+	SettingKeyStrictSessionBindingOverride          = "strict_session_binding_override"
+	SettingKeyStrictSessionBindingEnabled           = "strict_session_binding_enabled"
+	SettingKeyStrictSessionEndUserHeader            = "strict_session_end_user_header"
+	SettingKeyStrictSessionEndUserHeaderTrusted     = "strict_session_end_user_header_trusted"
+	SettingKeyStrictSessionSessionHeader            = "strict_session_session_header"
+	SettingKeyStrictSessionSameAccountRetryLimit    = "strict_session_same_account_retry_limit"
+	SettingKeyStrictSessionFallbackOrder            = "strict_session_fallback_order"
+	SettingKeyStrictSessionFallbackGroupID          = "strict_session_fallback_group_id"
+	SettingKeyStrictSessionThirdPartyEnabled        = "strict_session_third_party_enabled"
+	SettingKeyStrictSessionThirdPartyBaseURL        = "strict_session_third_party_base_url"
+	SettingKeyStrictSessionThirdPartyAPIKey         = "strict_session_third_party_api_key"
+	SettingKeyStrictSessionThirdPartyTimeoutSeconds = "strict_session_third_party_timeout_seconds"
+)
+
+// strictSessionBindingState 挂在 SettingService 上，请求热路径只读这份缓存。
+type strictSessionBindingState struct {
+	strictSessionBindingCache atomic.Value // *cachedStrictSessionBinding
+}
+
+// StrictSessionBindingSettings 是管理页保存后的严格会话配置。API key 不通过管理接口返回。
+type StrictSessionBindingSettings struct {
+	StrictSessionBindingOverride            bool
+	StrictSessionBindingEnabled             bool
+	StrictSessionEndUserHeader              string
+	StrictSessionEndUserHeaderTrusted       bool
+	StrictSessionSessionHeader              string
+	StrictSessionSameAccountRetryLimit      int
+	StrictSessionFallbackOrder              string
+	StrictSessionFallbackGroupID            int64
+	StrictSessionThirdPartyEnabled          bool
+	StrictSessionThirdPartyBaseURL          string
+	StrictSessionThirdPartyAPIKey           string
+	StrictSessionThirdPartyAPIKeyConfigured bool
+	StrictSessionThirdPartyTimeoutSeconds   int
+}
 
 const strictSessionBindingCacheTTL = 30 * time.Second
 
@@ -16,6 +55,41 @@ type cachedStrictSessionBinding struct {
 	override  bool
 	cfg       config.GatewayStrictSessionBindingConfig
 	expiresAt int64
+}
+
+func strictSessionBindingDefaultSettings() map[string]string {
+	return map[string]string{
+		SettingKeyStrictSessionBindingOverride:          "false",
+		SettingKeyStrictSessionBindingEnabled:           "false",
+		SettingKeyStrictSessionEndUserHeader:            "",
+		SettingKeyStrictSessionEndUserHeaderTrusted:     "false",
+		SettingKeyStrictSessionSessionHeader:            "X-Session-Id",
+		SettingKeyStrictSessionSameAccountRetryLimit:    "-1",
+		SettingKeyStrictSessionFallbackOrder:            config.StrictFallbackOrderGroupFirst,
+		SettingKeyStrictSessionFallbackGroupID:          "0",
+		SettingKeyStrictSessionThirdPartyEnabled:        "false",
+		SettingKeyStrictSessionThirdPartyBaseURL:        "",
+		SettingKeyStrictSessionThirdPartyAPIKey:         "",
+		SettingKeyStrictSessionThirdPartyTimeoutSeconds: "0",
+	}
+}
+
+func (s *SettingService) applyStrictSessionBindingUpdates(ctx context.Context, settings *SystemSettings, updates map[string]string) error {
+	if settings == nil || !settings.StrictSessionBindingOverride {
+		return nil
+	}
+	cfg := settings.strictSessionBindingConfig()
+	if err := cfg.NormalizeAndValidate(); err != nil {
+		return infraerrors.BadRequest("INVALID_STRICT_SESSION_BINDING", err.Error())
+	}
+	if err := s.ValidateStrictFallbackGroup(ctx, cfg.FallbackGroupID); err != nil {
+		return err
+	}
+	applyResolvedStrictSessionBinding(settings, cfg)
+	for key, value := range strictSessionBindingUpdates(settings) {
+		updates[key] = value
+	}
+	return nil
 }
 
 func applyStrictSessionBindingSettings(result *SystemSettings, settings map[string]string) {

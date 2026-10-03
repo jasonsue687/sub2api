@@ -799,10 +799,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
-	// strictSessionStore 是 Claude Messages 永久绑定的数据库事实来源。
-	// 为 nil 且功能关闭时不影响官方调度；功能开启但未注入时失败关闭，不重新选号。
-	strictSessionStore   StrictSessionBindingStore
-	strictThirdPartyHTTP *http.Client
+	strictSessionGateway
 }
 
 // NewGatewayService creates a new GatewayService
@@ -901,34 +898,10 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed.MetadataUserID != "" {
 		uid := ParseMetadataUserID(parsed.MetadataUserID)
 		if uid != nil && uid.SessionID != "" {
-			if s.strictSessionLogsRedacted() {
-				slog.Info("sticky.hash_source",
-					"source", "metadata_user_id",
-					"session_fp", StrictSessionFingerprint(uid.SessionID),
-					"has_device_id", uid.DeviceID != "",
-					"is_new_format", uid.IsNewFormat,
-				)
-			} else {
-				slog.Info("sticky.hash_source",
-					"source", "metadata_user_id",
-					"session_id", uid.SessionID,
-					"device_id", uid.DeviceID,
-					"is_new_format", uid.IsNewFormat,
-				)
-			}
+			s.logStickyMetadataSession(uid)
 			return uid.SessionID
 		}
-		if s.strictSessionLogsRedacted() {
-			slog.Info("sticky.hash_metadata_parse_failed",
-				"metadata_fp", StrictSessionFingerprint(parsed.MetadataUserID),
-				"parsed_nil", uid == nil,
-			)
-		} else {
-			slog.Info("sticky.hash_metadata_parse_failed",
-				"metadata_user_id", parsed.MetadataUserID,
-				"parsed_nil", uid == nil,
-			)
-		}
+		s.logStickyMetadataParseFailed(parsed.MetadataUserID, uid == nil)
 	}
 
 	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容

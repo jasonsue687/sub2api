@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -362,6 +363,46 @@ func ProvideGatewayService(
 	)
 	svc.SetStrictSessionBindingStore(strictStore)
 	return svc
+}
+
+// strictSessionGateway 挂在 GatewayService 上。功能关闭且 store 为 nil 时不影响官方调度。
+type strictSessionGateway struct {
+	// strictSessionStore 是 Claude Messages 永久绑定的数据库事实来源。
+	// 为 nil 且功能关闭时不影响官方调度；功能开启但未注入时失败关闭，不重新选号。
+	strictSessionStore   StrictSessionBindingStore
+	strictThirdPartyHTTP *http.Client
+}
+
+func (s *GatewayService) logStickyMetadataSession(uid *ParsedUserID) {
+	if s.strictSessionLogsRedacted() {
+		slog.Info("sticky.hash_source",
+			"source", "metadata_user_id",
+			"session_fp", StrictSessionFingerprint(uid.SessionID),
+			"has_device_id", uid.DeviceID != "",
+			"is_new_format", uid.IsNewFormat,
+		)
+		return
+	}
+	slog.Info("sticky.hash_source",
+		"source", "metadata_user_id",
+		"session_id", uid.SessionID,
+		"device_id", uid.DeviceID,
+		"is_new_format", uid.IsNewFormat,
+	)
+}
+
+func (s *GatewayService) logStickyMetadataParseFailed(metadataUserID string, parsedNil bool) {
+	if s.strictSessionLogsRedacted() {
+		slog.Info("sticky.hash_metadata_parse_failed",
+			"metadata_fp", StrictSessionFingerprint(metadataUserID),
+			"parsed_nil", parsedNil,
+		)
+		return
+	}
+	slog.Info("sticky.hash_metadata_parse_failed",
+		"metadata_user_id", metadataUserID,
+		"parsed_nil", parsedNil,
+	)
 }
 
 // strictSessionLogsRedacted 在严格模式开启时禁止把完整会话身份写入日志。

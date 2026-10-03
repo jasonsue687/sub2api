@@ -463,14 +463,14 @@ func TestThirdPartyPartialBodyIsNotRetried(t *testing.T) {
 	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
 	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = "https://relay.example"
 	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
-	svc := &GatewayService{cfg: cfg, strictThirdPartyHTTP: &http.Client{Transport: strictRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	svc := &GatewayService{cfg: cfg, strictSessionGateway: strictSessionGateway{strictThirdPartyHTTP: &http.Client{Transport: strictRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 			Body:       io.NopCloser(&errAfterReader{data: []byte("data: partial\n\n")}),
 			Request:    r,
 		}, nil
-	})}}
+	})}}}
 	recorder := httptest.NewRecorder()
 	err := svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{"stream":true}`), recorder)
 	var statusErr *StrictThirdPartyStatusError

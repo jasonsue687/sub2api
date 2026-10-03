@@ -16,6 +16,7 @@ const (
 	strictFlowPassthrough = iota
 	strictFlowStop
 	strictFlowRetryGroup
+	strictFlowSameAccount
 )
 
 const (

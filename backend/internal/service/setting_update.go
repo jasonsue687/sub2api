@@ -559,18 +559,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 
-	if settings.StrictSessionBindingOverride {
-		cfg := settings.strictSessionBindingConfig()
-		if err := cfg.NormalizeAndValidate(); err != nil {
-			return nil, infraerrors.BadRequest("INVALID_STRICT_SESSION_BINDING", err.Error())
-		}
-		if err := s.ValidateStrictFallbackGroup(ctx, cfg.FallbackGroupID); err != nil {
-			return nil, err
-		}
-		applyResolvedStrictSessionBinding(settings, cfg)
-		for key, value := range strictSessionBindingUpdates(settings) {
-			updates[key] = value
-		}
+	if err := s.applyStrictSessionBindingUpdates(ctx, settings, updates); err != nil {
+		return nil, err
 	}
 
 	return updates, nil

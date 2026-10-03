@@ -27,6 +27,33 @@ func StrictFallbackGroupFromContext(ctx context.Context) (int64, bool) {
 	return id, ok && id > 0
 }
 
+func strictFallbackSchedulingScope(ctx context.Context, groupID *int64) (*int64, bool) {
+	forced, ok := StrictFallbackGroupFromContext(ctx)
+	if !ok {
+		return groupID, false
+	}
+	return &forced, true
+}
+
+func overrideStrictFallbackGroup(ctx context.Context, groupID *int64) *int64 {
+	scoped, _ := strictFallbackSchedulingScope(ctx, groupID)
+	return scoped
+}
+
+func withStrictFallbackBucketGroup(ctx context.Context, bucket SchedulerBucket) SchedulerBucket {
+	if forced, ok := StrictFallbackGroupFromContext(ctx); ok {
+		bucket.GroupID = forced
+	}
+	return bucket
+}
+
+func strictFallbackSimpleGroupID(ctx context.Context, groupID int64) int64 {
+	if forced, ok := StrictFallbackGroupFromContext(ctx); ok {
+		return forced
+	}
+	return groupID
+}
+
 const (
 	// StrictRecoveryThirdParty 把请求发到独立中转，不改绑定。
 	StrictRecoveryThirdParty = "third_party"

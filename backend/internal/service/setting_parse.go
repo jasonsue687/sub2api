@@ -176,20 +176,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyFallbackModelGemini:      "gemini-2.5-pro",
 		SettingKeyFallbackModelAntigravity: "gemini-2.5-pro",
 		// Identity patch defaults
-		SettingKeyEnableIdentityPatch:                   "true",
-		SettingKeyIdentityPatchPrompt:                   "",
-		SettingKeyStrictSessionBindingOverride:          "false",
-		SettingKeyStrictSessionBindingEnabled:           "false",
-		SettingKeyStrictSessionEndUserHeader:            "",
-		SettingKeyStrictSessionEndUserHeaderTrusted:     "false",
-		SettingKeyStrictSessionSessionHeader:            "X-Session-Id",
-		SettingKeyStrictSessionSameAccountRetryLimit:    "-1",
-		SettingKeyStrictSessionFallbackOrder:            config.StrictFallbackOrderGroupFirst,
-		SettingKeyStrictSessionFallbackGroupID:          "0",
-		SettingKeyStrictSessionThirdPartyEnabled:        "false",
-		SettingKeyStrictSessionThirdPartyBaseURL:        "",
-		SettingKeyStrictSessionThirdPartyAPIKey:         "",
-		SettingKeyStrictSessionThirdPartyTimeoutSeconds: "0",
+		SettingKeyEnableIdentityPatch: "true",
+		SettingKeyIdentityPatchPrompt: "",
 
 		// Ops monitoring defaults (vNext)
 		SettingKeyOpsMonitoringEnabled:         "true",
@@ -282,6 +270,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpenAIAdvancedSchedulerWeightSessionSticky:         "",
 
 		SettingKeyAllowUserViewErrorRequests: "false",
+	}
+	for key, value := range strictSessionBindingDefaultSettings() {
+		defaults[key] = value
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)

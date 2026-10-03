@@ -1012,10 +1012,7 @@ func (s *GatewayService) resolvePlatform(ctx context.Context, groupID *int64, gr
 }
 
 func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
-	_, strictFallbackScoped := StrictFallbackGroupFromContext(ctx)
-	if forced, ok := StrictFallbackGroupFromContext(ctx); ok {
-		groupID = &forced
-	}
+	groupID, strictFallbackScoped := strictFallbackSchedulingScope(ctx, groupID)
 	if s.schedulerSnapshot != nil {
 		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {

@@ -227,18 +227,7 @@ type UpdateSettingsRequest struct {
 	EnableIdentityPatch bool   `json:"enable_identity_patch"`
 	IdentityPatchPrompt string `json:"identity_patch_prompt"`
 
-	// Strict Claude Messages session binding. Empty API key keeps the stored secret.
-	StrictSessionBindingEnabled           bool   `json:"strict_session_binding_enabled"`
-	StrictSessionEndUserHeader            string `json:"strict_session_end_user_header"`
-	StrictSessionEndUserHeaderTrusted     bool   `json:"strict_session_end_user_header_trusted"`
-	StrictSessionSessionHeader            string `json:"strict_session_session_header"`
-	StrictSessionSameAccountRetryLimit    int    `json:"strict_session_same_account_retry_limit"`
-	StrictSessionFallbackOrder            string `json:"strict_session_fallback_order"`
-	StrictSessionFallbackGroupID          int64  `json:"strict_session_fallback_group_id"`
-	StrictSessionThirdPartyEnabled        bool   `json:"strict_session_third_party_enabled"`
-	StrictSessionThirdPartyBaseURL        string `json:"strict_session_third_party_base_url"`
-	StrictSessionThirdPartyAPIKey         string `json:"strict_session_third_party_api_key"`
-	StrictSessionThirdPartyTimeoutSeconds int    `json:"strict_session_third_party_timeout_seconds"`
+	StrictSessionBindingSettingsRequest
 
 	// Ops monitoring (vNext)
 	OpsMonitoringEnabled         *bool   `json:"ops_monitoring_enabled"`
@@ -1535,15 +1524,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
-	var resolvedStrict *config.GatewayStrictSessionBindingConfig
-	if strictSessionPayloadTouched(sentFields) {
-		resolved, err := h.settingService.ResolveStrictSessionBindingSave(c.Request.Context(), previousSettings, strictSessionBindingPatch(req, sentFields))
-		if err != nil {
-			response.ErrorFrom(c, err)
-			return
-		}
-		resolvedStrict = &resolved
-		service.KeepStrictSessionBindingKeys(omitted)
+	resolvedStrict, err := h.prepareStrictSessionBindingSave(c.Request.Context(), previousSettings, req, sentFields, omitted)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
 	}
 
 	settings := &service.SystemSettings{
