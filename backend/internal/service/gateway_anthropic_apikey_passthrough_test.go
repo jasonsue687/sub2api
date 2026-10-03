@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1432,9 +1433,23 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingDataIntervalTimeout(
 	require.False(t, result.clientDisconnect)
 }
 
+// Wait for an observed flush rather than racing a 1s timer with a 1.2s sleep.
+type anthropicKeepaliveRecorder struct {
+	*httptest.ResponseRecorder
+	ping chan struct{}
+	once sync.Once
+}
+
+func (r *anthropicKeepaliveRecorder) Flush() {
+	r.ResponseRecorder.Flush()
+	if strings.Contains(r.Body.String(), "event: ping\ndata: {\"type\": \"ping\"}\n\n") {
+		r.once.Do(func() { close(r.ping) })
+	}
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingSendsKeepaliveDuringIdle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
+	rec := &anthropicKeepaliveRecorder{ResponseRecorder: httptest.NewRecorder(), ping: make(chan struct{})}
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 
@@ -1458,7 +1473,12 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingSendsKeepaliveDuring
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		time.Sleep(1200 * time.Millisecond)
+		select {
+		case <-rec.ping:
+		case <-time.After(5 * time.Second):
+			_ = pw.CloseWithError(errors.New("timed out waiting for keepalive ping"))
+			return
+		}
 		_, _ = pw.Write([]byte(strings.Join([]string{
 			`data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
 			"",

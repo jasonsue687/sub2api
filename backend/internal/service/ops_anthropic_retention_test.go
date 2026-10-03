@@ -29,7 +29,11 @@ func TestAnthropicRetentionIndependentOfRuntimeLogs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
+			defer func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			db.SetMaxOpenConns(1)
 			if _, err = db.Exec(`CREATE TABLE ops_system_logs (id INTEGER PRIMARY KEY, component TEXT, created_at TIMESTAMP)`); err != nil {
 				t.Fatal(err)
@@ -67,7 +71,11 @@ func TestAnthropicRetentionIndependentOfRuntimeLogs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer rows.Close()
+			defer func() {
+				if err := rows.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			var got []int
 			for rows.Next() {
 				var id int
