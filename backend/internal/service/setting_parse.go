@@ -271,6 +271,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		SettingKeyAllowUserViewErrorRequests: "false",
 	}
+	for key, value := range strictSessionBindingDefaultSettings() {
+		defaults[key] = value
+	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
 }
@@ -782,6 +785,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		result.EnableIdentityPatch = true
 	}
 	result.IdentityPatchPrompt = settings[SettingKeyIdentityPatchPrompt]
+	applyStrictSessionBindingSettings(result, settings)
 
 	// Ops monitoring settings (default: enabled, fail-open)
 	result.OpsMonitoringEnabled = !isFalseSettingValue(settings[SettingKeyOpsMonitoringEnabled])

@@ -203,6 +203,7 @@
 
         <!-- Tab: Gateway -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
+          <StrictSessionBindingSettings :form="form" :groups="strictFallbackGroups" />
           <!-- Overload Cooldown (529) Settings -->
           <div class="card">
             <div
@@ -9031,6 +9032,12 @@ import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
+import StrictSessionBindingSettings from "@/views/admin/settings/StrictSessionBindingSettings.vue";
+import {
+  clearStrictSessionBindingSecret,
+  strictSessionBindingFormDefaults,
+  strictSessionBindingUpdatePayload,
+} from "@/views/admin/settings/strictSessionBindingForm";
 import RechargeBonusTierEditor from "@/components/admin/settings/RechargeBonusTierEditor.vue";
 import {
   normalizeRechargeBonusMode,
@@ -9183,6 +9190,7 @@ const adminApiKeyMasked = ref("");
 const adminApiKeyOperating = ref(false);
 const newAdminApiKey = ref("");
 const subscriptionGroups = ref<AdminGroup[]>([]);
+const strictFallbackGroups = ref<AdminGroup[]>([]);
 
 // Upstream billing probe state
 const upstreamBillingProbeLoading = ref(true);
@@ -9738,6 +9746,7 @@ type SettingsForm = Omit<
   oidc_connect_client_secret: string;
   github_oauth_client_secret: string;
   google_oauth_client_secret: string;
+  strict_session_third_party_api_key: string;
   force_email_on_third_party_signup: boolean;
   openai_low_upstream_rate_priority_enabled: boolean;
   openai_oauth_scheduling_rate_multiplier: number | "" | null;
@@ -9980,6 +9989,7 @@ const form = reactive<SettingsForm>({
   // Identity patch (Claude -> Gemini)
   enable_identity_patch: true,
   identity_patch_prompt: "",
+  ...strictSessionBindingFormDefaults,
   // Ops monitoring (vNext)
   ops_monitoring_enabled: true,
   ops_realtime_monitoring_enabled: true,
@@ -11126,6 +11136,7 @@ async function loadSettings() {
     );
     registrationEmailSuffixWhitelistDraft.value = "";
     form.smtp_password = "";
+    clearStrictSessionBindingSecret(form);
     smtpPasswordManuallyEdited.value = false;
     form.turnstile_secret_key = "";
     form.tencent_captcha_app_secret_key = "";
@@ -11227,11 +11238,17 @@ async function loadSubscriptionGroups() {
   try {
     const groups = await adminAPI.groups.getAll();
     subscriptionGroups.value = groups.filter(
+        (group) =>
+          group.subscription_type === "subscription" && group.status === "active",
+      );
+    strictFallbackGroups.value = groups.filter(
       (group) =>
-        group.subscription_type === "subscription" && group.status === "active",
+        group.status === "active" &&
+        (group.platform === "anthropic" || group.platform === "antigravity"),
     );
   } catch (_error: unknown) {
     subscriptionGroups.value = [];
+    strictFallbackGroups.value = [];
   }
 }
 
@@ -11648,6 +11665,7 @@ async function saveSettings() {
       grok_default_base_url_mode: form.grok_default_base_url_mode,
       enable_identity_patch: form.enable_identity_patch,
       identity_patch_prompt: form.identity_patch_prompt,
+      ...strictSessionBindingUpdatePayload(form),
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
@@ -11867,6 +11885,7 @@ async function saveSettings() {
     );
     registrationEmailSuffixWhitelistDraft.value = "";
     form.smtp_password = "";
+    clearStrictSessionBindingSecret(form);
     smtpPasswordManuallyEdited.value = false;
     form.turnstile_secret_key = "";
     form.aliyun_captcha_access_key_secret = "";

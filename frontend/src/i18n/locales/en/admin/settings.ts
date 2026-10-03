@@ -1,3 +1,5 @@
+import strictSession from './strictSession'
+
 export default {
     settings: {
       title: 'System Settings',
@@ -1056,6 +1058,7 @@ export default {
         securityWarning: 'Warning: This key provides full admin access. Keep it secure.',
         usage: 'Usage: Add to request header - x-api-key: <your-admin-api-key>'
       },
+      strictSession,
       overloadCooldown: {
         title: '529 Overload Cooldown',
         description: 'Configure account scheduling pause strategy when upstream returns 529 (overloaded)',

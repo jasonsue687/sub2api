@@ -208,9 +208,10 @@ func (s *SchedulerSnapshotService) Stop() {
 }
 
 func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	groupID = overrideStrictFallbackGroup(ctx, groupID)
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	mode := s.resolveMode(platform, hasForcePlatform)
-	bucket := s.bucketFor(groupID, platform, mode)
+	bucket := withStrictFallbackBucketGroup(ctx, s.bucketFor(groupID, platform, mode))
 	var writeToken SchedulerBucketWriteToken
 	canPublish := false
 	if err := ctx.Err(); err != nil {
@@ -1472,7 +1473,7 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 	}
 	groupID := bucket.GroupID
 	if s.isRunModeSimple() {
-		groupID = 0
+		groupID = strictFallbackSimpleGroupID(ctx, 0)
 	}
 
 	if useMixed {

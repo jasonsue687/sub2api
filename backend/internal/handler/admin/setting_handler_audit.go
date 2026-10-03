@@ -389,6 +389,7 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.IdentityPatchPrompt != after.IdentityPatchPrompt {
 		changed = append(changed, "identity_patch_prompt")
 	}
+	changed = appendStrictSessionBindingAudit(changed, before, after)
 	if before.OpsMonitoringEnabled != after.OpsMonitoringEnabled {
 		changed = append(changed, "ops_monitoring_enabled")
 	}

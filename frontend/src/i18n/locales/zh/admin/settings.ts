@@ -1,3 +1,5 @@
+import strictSession from './strictSession'
+
 export default {
     settings: {
       title: '系统设置',
@@ -1050,6 +1052,7 @@ export default {
         securityWarning: '警告：此密钥拥有完整的管理员权限，请妥善保管。',
         usage: '使用方法：在请求头中添加 x-api-key: <your-admin-api-key>'
       },
+      strictSession,
       overloadCooldown: {
         title: '529 过载冷却',
         description: '配置上游返回 529（过载）时的账号调度暂停策略',

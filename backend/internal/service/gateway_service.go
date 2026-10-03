@@ -799,6 +799,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	strictSessionGateway
 }
 
 // NewGatewayService creates a new GatewayService
@@ -897,18 +898,10 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed.MetadataUserID != "" {
 		uid := ParseMetadataUserID(parsed.MetadataUserID)
 		if uid != nil && uid.SessionID != "" {
-			slog.Info("sticky.hash_source",
-				"source", "metadata_user_id",
-				"session_id", uid.SessionID,
-				"device_id", uid.DeviceID,
-				"is_new_format", uid.IsNewFormat,
-			)
+			s.logStickyMetadataSession(uid)
 			return uid.SessionID
 		}
-		slog.Info("sticky.hash_metadata_parse_failed",
-			"metadata_user_id", parsed.MetadataUserID,
-			"parsed_nil", uid == nil,
-		)
+		s.logStickyMetadataParseFailed(parsed.MetadataUserID, uid == nil)
 	}
 
 	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容
