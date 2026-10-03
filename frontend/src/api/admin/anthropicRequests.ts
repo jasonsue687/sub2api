@@ -67,3 +67,117 @@ export async function listAnthropicRequests(params: AnthropicQuery, signal?: Abo
   const { data } = await apiClient.get<AnthropicRequestList>('/admin/ops/anthropic-requests', { params, signal })
   return data
 }
+
+export interface AnthropicSessionSummary {
+  inbound_requests: number
+  outbound_attempts: number
+  multi_attempts: number
+  failed_requests: number
+}
+export interface AnthropicAccountOption {
+  id: number
+  name: string
+}
+export interface AnthropicSessionRow {
+  client_request_id: string
+  request_id: string
+  created_at: string
+  api_key_id: number
+  api_key_name: string
+  username: string
+  user_id: number
+  endpoint: string
+  inbound_model: string
+  outbound_model: string
+  stream: boolean
+  status: number
+  account_id: number
+  account_name: string
+  attempt_count: number
+  duration_ms: number
+  has_inbound: boolean
+  has_outbound: boolean
+  error_class: string
+  consistency: string
+  truncated: boolean
+}
+export interface AnthropicCaptureHealth {
+  queue_capacity: number
+  queue_depth: number
+  dropped_count: number
+  write_failed_count: number
+  written_count: number
+}
+export interface AnthropicSessionList {
+  summary: AnthropicSessionSummary
+  records: AnthropicSessionRow[]
+  total: number
+  page: number
+  page_size: number
+  accounts: AnthropicAccountOption[]
+  models: string[]
+  start_time: string
+  end_time: string
+  inbound_enabled: boolean
+  capture_health: AnthropicCaptureHealth
+}
+export interface AnthropicSessionQuery {
+  start_time: string
+  end_time: string
+  page: number
+  page_size: number
+  account_id?: number
+  only_multi?: boolean
+  only_failed?: boolean
+  only_mismatch?: boolean
+  model?: string
+  q?: string
+}
+export interface AnthropicCapture {
+  direction: string
+  client_request_id: string
+  request_id: string
+  account_id: number
+  account_name: string
+  user_id: number
+  api_key_id: number
+  api_key_name: string
+  username: string
+  endpoint: string
+  client_path: string
+  model: string
+  stream?: boolean
+  attempt_seq: number
+  retry_reason: string
+  account_switch_count: number
+  attempt_count: number
+  status: number
+  error_class: string
+  upstream_request_id: string
+  duration_ms: number
+  headers_ms: number
+  headers?: unknown
+  body?: unknown
+  body_state: string
+  summary?: unknown
+  consistency: string
+  truncated: boolean
+  original_bytes: number
+  created_at: string
+}
+export interface AnthropicSessionDetail {
+  session: AnthropicSessionRow
+  inbound: AnthropicCapture | null
+  attempts: AnthropicCapture[]
+}
+export async function listAnthropicSessions(params: AnthropicSessionQuery, signal?: AbortSignal) {
+  const { data } = await apiClient.get<AnthropicSessionList>('/admin/ops/anthropic-request-sessions', { params, signal })
+  return data
+}
+export async function getAnthropicSession(clientRequestId: string, signal?: AbortSignal) {
+  const { data } = await apiClient.get<AnthropicSessionDetail>('/admin/ops/anthropic-request-sessions/detail', {
+    params: { client_request_id: clientRequestId },
+    signal
+  })
+  return data
+}

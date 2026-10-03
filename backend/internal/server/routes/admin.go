@@ -264,6 +264,8 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 
 		// Allowlisted outbound Anthropic metadata (admin-only).
 		ops.GET("/anthropic-requests", h.Admin.Ops.ListAnthropicRequests)
+		ops.GET("/anthropic-request-sessions", h.Admin.Ops.ListAnthropicSessions)
+		ops.GET("/anthropic-request-sessions/detail", h.Admin.Ops.GetAnthropicSession)
 
 		// Indexed system logs
 		ops.GET("/system-logs", h.Admin.Ops.ListSystemLogs)

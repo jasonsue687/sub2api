@@ -1,8 +1,21 @@
-# Anthropic 订阅账号出站请求监控
+# Anthropic 请求监控
+
+管理员菜单 **Anthropic 请求监控** 路径为 `/admin/anthropic-requests`。列表每一行是一次客户端请求（`client_request_id`），详情页左右对照入站正文和发往 Anthropic 的出站正文。提示词、密钥和工具名已脱敏。`/v1/chat/completions` 与 `/v1/responses` 本阶段不采入站，若它们仍转到 `/v1/messages`，列表标为「无入站记录」。选路失败、没有发出上游请求的入站标为「无出站请求」。
+
+## 入站与出站全文
+
+- 入站在 `Messages` / `CountTokens` 读完 body、解析改写之前复制。出站在 `HTTPUpstream.Do` / `DoWithTLS` 里、现有摘要采集旁边再复制一份即将发送的请求；只有原摘要采集接受的请求才写出站全文，范围仍是直连 `api.anthropic.com` 的 `/v1/messages` 与 `/v1/messages/count_tokens`。
+- 一次入站对应多次出站。出站带 `attempt_seq` 与 `retry_reason`（`initial`、`account_switch`、`same_account_retry`、`upstream_retry`、`signature_rectify`、`budget_rectify`）。
+- 热路径只复制 header 和最多 8MiB 的 body，然后非阻塞写入容量 512 的队列。队列满则丢弃并计数，不拖慢线上请求。后台 worker 再脱敏并落库。
+- 脱敏只替换提示词、密钥和工具名。`x-anthropic-billing-header:` 原文保留。thinking signature 只留长度和 SHA-256。工具名（含 `tool_use` / `tool_choice` 的 name）只留长度，不留哈希。单份脱敏文档超过 64KiB 时只存截断预览。
+- 新表 `anthropic_request_captures`（迁移 250）。列表查询不读取 body。保留 30 天，由 Ops 清理任务删除。原 `ops_system_logs` 摘要和 `GET /admin/ops/anthropic-requests` 保持不变。新页面使用 `GET /admin/ops/anthropic-request-sessions` 与 `.../detail`。
+- 入站开关 `SUB2API_ANTHROPIC_INBOUND_AUDIT_ENABLED` 默认开启，与出站总开关独立。账号白名单仍用 `SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS`；尚未选中账号的失败入站（account id 为 0）会保留。
+
+## 原出站摘要
 
 ## 入口与采集开关
 
-管理员菜单新增 **Anthropic 请求监控**，路径 `/admin/anthropic-requests?account_id=11`。页面可查询最近 1 小时、24 小时、7 天或 30 天，自动刷新、筛选不一致、查看摘要、比较两条请求、导出当前页。
+下面这一节描述仍写入 `ops_system_logs` 的出站摘要，以及未改动的旧查询 API。当前页面不再调用该 API。
 
 所有符合采集范围的 Anthropic 订阅账号默认开启，无需逐个配置 ID；新增账号自动纳入。范围仍为直连 `api.anthropic.com` 的订阅请求，API Key 和自定义中转地址不在此监控范围内。
 
@@ -34,7 +47,7 @@ SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS=11,12
 
 ## 存储、权限与查询
 
-使用现有 `ops_system_logs`，component 为 `audit.anthropic_outbound`，摘要放在 `extra.audit`；无数据库迁移和新公开端口。新 API `/api/v1/admin/ops/anthropic-requests` 位于现有管理员鉴权路由组。必须提供正数 account_id；时间最多 30 天、每页最多 100 条，数据库查询超时 10 秒。
+出站摘要仍使用现有 `ops_system_logs`，component 为 `audit.anthropic_outbound`，摘要放在 `extra.audit`。旧 API `/api/v1/admin/ops/anthropic-requests` 位于现有管理员鉴权路由组。必须提供正数 account_id；时间最多 30 天、每页最多 100 条，数据库查询超时 10 秒。全文对照存在独立表，见上文。
 
 汇总和组合统计覆盖整个时间范围；“仅显示不一致”只筛选明细。单条 SQL 保证汇总、分页与组合处于同一数据库快照。组合列表展示前 20 种。按 account_id/created_at 使用已有索引。
 

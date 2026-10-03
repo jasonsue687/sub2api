@@ -93,3 +93,42 @@ func TestAnthropicRetentionIndependentOfRuntimeLogs(t *testing.T) {
 		})
 	}
 }
+
+func TestAnthropicCaptureRetention(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	if _, err = db.Exec(`CREATE TABLE anthropic_request_captures (id INTEGER PRIMARY KEY, created_at TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	for _, row := range []struct {
+		id  int
+		age time.Duration
+	}{
+		{1, 0},
+		{2, 29 * 24 * time.Hour},
+		{3, 30*24*time.Hour + time.Second},
+	} {
+		if _, err = db.Exec(`INSERT INTO anthropic_request_captures VALUES ($1,$2)`, row.id, now.Add(-row.age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := cleanupAnthropicCaptures(context.Background(), db, now, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted %d", deleted)
+	}
+	var kept int
+	if err = db.QueryRow(`SELECT count(*) FROM anthropic_request_captures`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept != 2 {
+		t.Fatalf("kept %d", kept)
+	}
+}
