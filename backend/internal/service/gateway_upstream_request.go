@@ -160,9 +160,16 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		}
 	}
 
-	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）
+	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）。
+	// 账号指纹提供稳定标识和软件版本；非 mimic 路径随后把 UA 入口改回当前请求，
+	// 避免另一个客户端留在缓存里的入口后缀和本次 cc_entrypoint 矛盾。
 	if fingerprint != nil {
 		s.identityService.ApplyFingerprint(req, fingerprint)
+		if !(tokenType == "oauth" && mimicClaudeCode) {
+			if err := alignNonMimicOAuthEntrypoint(req, clientHeaders, body, fingerprint.UserAgent, account.ID); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 
 	// 确保必要的headers存在（保持原始大小写）
