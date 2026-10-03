@@ -526,7 +526,11 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	// User-Agent 头共用这一个字符串（同 buildUpstreamRequest）。
 	ctMimicUserAgent := claude.DefaultUserAgent()
 	if billingUA := effectiveBillingUserAgent(ctMimicUserAgent, tokenType, mimicClaudeCode, billingFingerprint); billingUA != "" {
-		body = syncBillingHeaderVersion(body, billingUA)
+		var err error
+		body, err = syncBillingHeaderIdentity(body, billingUA, account.ID)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===
@@ -575,12 +579,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 
 	// OAuth 账号：应用指纹到请求头（受设置开关控制）。
-	// 非 mimic 路径只沿用账号级版本和稳定标识，入口类型跟当前请求。
+	// 沿用账号缓存的完整 UA；billing 已在构造请求前与最终 UA 对齐。
 	if ctEnableFP && ctFingerprint != nil {
 		s.identityService.ApplyFingerprint(req, ctFingerprint)
-		if err := alignNonMimicOAuthEntrypoint(req, clientHeaders, body, ctFingerprint.UserAgent, account.ID, tokenType, mimicClaudeCode); err != nil {
-			return nil, nil, err
-		}
 	}
 
 	// 确保必要的 headers 存在（保持原始大小写）

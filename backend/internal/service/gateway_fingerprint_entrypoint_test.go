@@ -18,8 +18,8 @@ import (
 )
 
 // 这些用例走 buildUpstreamRequest / buildCountTokensRequest，再用 mock transport
-// 读取最终出站的 Header 与 Body。版本号可以跟账号指纹对齐；入口类型必须跟当前请求，
-// 不能被另一个客户端留在账号缓存里的 UA 后缀改写。
+// 读取最终出站的 Header 与 Body。完整 UA 沿用账号指纹，billing 的版本和入口
+// 与最终 UA 对齐，当前客户端的 agent-sdk 等后缀不会替换账号缓存。
 func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const (
@@ -65,7 +65,6 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 		wantBodyVersion string // 空表示不检查 cc_version；"mimic" 表示等于 mimic UA 的版本
 		wantStainlessOS string
 		wantExactBody   string
-		allowEPMismatch bool // mimic 模板 UA 与 body 入口可以不同，这是既有行为
 	}{
 		{
 			name:            "agent_cache_cli_request",
@@ -74,8 +73,8 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 			clientUA:        clientUA("cli"),
 			billingVersion:  clientVersion,
 			billingEP:       "cli",
-			wantUA:          cacheUA("cli"),
-			wantBodyEP:      "cli",
+			wantUA:          cacheUA("local-agent"),
+			wantBodyEP:      "local-agent",
 			wantBodyVersion: cacheVersion,
 			wantStainlessOS: cachedOS,
 		},
@@ -86,8 +85,8 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 			clientUA:        clientUA("local-agent"),
 			billingVersion:  clientVersion,
 			billingEP:       "local-agent",
-			wantUA:          cacheUA("local-agent"),
-			wantBodyEP:      "local-agent",
+			wantUA:          cacheUA("cli"),
+			wantBodyEP:      "cli",
 			wantBodyVersion: cacheVersion,
 			wantStainlessOS: cachedOS,
 		},
@@ -104,14 +103,14 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 			wantStainlessOS: cachedOS,
 		},
 		{
-			name:            "version_sync_keeps_request_entrypoint",
+			name:            "version_and_entrypoint_follow_cached_ua",
 			endpoints:       []endpointKind{endpointMessages},
 			cacheEntrypoint: "local-agent",
 			clientUA:        clientUA("cli"),
 			billingVersion:  clientVersion,
 			billingEP:       "cli",
-			wantUA:          cacheUA("cli"),
-			wantBodyEP:      "cli",
+			wantUA:          cacheUA("local-agent"),
+			wantBodyEP:      "local-agent",
 			wantBodyVersion: cacheVersion,
 			wantStainlessOS: cachedOS,
 		},
@@ -121,20 +120,32 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 			cacheEntrypoint: "local-agent",
 			billingVersion:  clientVersion,
 			billingEP:       "cli",
+			wantUA:          cacheUA("local-agent"),
+			wantBodyEP:      "local-agent",
+			wantBodyVersion: cacheVersion,
+			wantStainlessOS: cachedOS,
+		},
+		{
+			name:            "incoming_agent_sdk_suffix_does_not_replace_cached_ua",
+			endpoints:       []endpointKind{endpointMessages, endpointCountTokens},
+			cacheEntrypoint: "cli",
+			complexClientUA: "claude-cli/2.1.284 (external, local-agent, agent-sdk/0.3.284)",
+			billingVersion:  cacheVersion,
+			billingEP:       "local-agent",
 			wantUA:          cacheUA("cli"),
 			wantBodyEP:      "cli",
 			wantBodyVersion: cacheVersion,
 			wantStainlessOS: cachedOS,
 		},
 		{
-			name:            "complex_client_suffix_preserved",
-			endpoints:       []endpointKind{endpointMessages},
-			cacheEntrypoint: "cli",
-			complexClientUA: "claude-cli/2.1.181 (external, claude-vscode, agent-sdk/0.3.181)",
-			billingVersion:  "2.1.181",
-			billingEP:       "claude-vscode",
-			wantUA:          "claude-cli/" + cacheVersion + " (external, claude-vscode, agent-sdk/0.3.181)",
-			wantBodyEP:      "claude-vscode",
+			name:            "existing_cached_suffix_is_preserved",
+			endpoints:       []endpointKind{endpointMessages, endpointCountTokens},
+			cacheEntrypoint: "local-agent, agent-sdk/0.3.284",
+			clientUA:        clientUA("cli"),
+			billingVersion:  clientVersion,
+			billingEP:       "cli",
+			wantUA:          cacheUA("local-agent, agent-sdk/0.3.284"),
+			wantBodyEP:      "local-agent",
 			wantBodyVersion: cacheVersion,
 			wantStainlessOS: cachedOS,
 		},
@@ -152,7 +163,7 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 			wantStainlessOS: "Linux",
 		},
 		{
-			name:            "mimic_does_not_rewrite_body_entrypoint",
+			name:            "mimic_aligns_body_entrypoint_with_template",
 			endpoints:       []endpointKind{endpointMessages, endpointCountTokens},
 			mimic:           true,
 			cacheEntrypoint: "cli",
@@ -160,10 +171,9 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 			billingVersion:  clientVersion,
 			billingEP:       "local-agent",
 			wantUA:          claude.DefaultHeaders()["User-Agent"],
-			wantBodyEP:      "local-agent",
+			wantBodyEP:      "cli",
 			wantBodyVersion: "mimic",
 			wantStainlessOS: "Linux",
-			allowEPMismatch: true,
 		},
 		{
 			name:            "fingerprint_unification_disabled",
@@ -179,20 +189,33 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 			wantStainlessOS: clientOS,
 		},
 		{
-			name:            "missing_billing_keeps_request_entrypoint",
+			name:            "fingerprint_disabled_preserves_incoming_sdk_identity",
+			endpoints:       []endpointKind{endpointMessages, endpointCountTokens},
+			disableFP:       true,
+			cacheEntrypoint: "cli",
+			complexClientUA: "claude-cli/2.1.284 (external, local-agent, agent-sdk/0.3.284)",
+			billingVersion:  cacheVersion,
+			billingEP:       "local-agent",
+			wantUA:          "claude-cli/2.1.284 (external, local-agent, agent-sdk/0.3.284)",
+			wantBodyEP:      "local-agent",
+			wantBodyVersion: cacheVersion,
+			wantStainlessOS: clientOS,
+		},
+		{
+			name:            "missing_billing_keeps_cached_ua_without_injecting_billing",
 			endpoints:       []endpointKind{endpointMessages, endpointCountTokens},
 			cacheEntrypoint: "local-agent",
 			clientUA:        clientUA("cli"),
-			wantUA:          cacheUA("cli"),
+			wantUA:          cacheUA("local-agent"),
 			wantStainlessOS: cachedOS,
 		},
 		{
-			name:            "invalid_json_keeps_request_entrypoint",
+			name:            "invalid_json_is_not_rewritten",
 			endpoints:       []endpointKind{endpointMessages, endpointCountTokens},
 			cacheEntrypoint: "local-agent",
 			clientUA:        clientUA("cli"),
 			invalidJSON:     true,
-			wantUA:          cacheUA("cli"),
+			wantUA:          cacheUA("local-agent"),
 			wantExactBody:   "{",
 			wantStainlessOS: cachedOS,
 		},
@@ -205,17 +228,20 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 			wantErrKind:     fingerprintEntrypointKindUnparseable,
 		},
 		{
-			name:            "request_ua_and_billing_disagree",
+			name:            "incoming_ua_disagreement_is_resolved_by_cached_identity",
 			endpoints:       []endpointKind{endpointMessages, endpointCountTokens},
 			cacheEntrypoint: "cli",
 			clientUA:        clientUA("local-agent"),
 			billingVersion:  clientVersion,
 			billingEP:       "cli",
-			wantErrKind:     fingerprintEntrypointKindDisagree,
+			wantUA:          cacheUA("cli"),
+			wantBodyEP:      "cli",
+			wantBodyVersion: cacheVersion,
+			wantStainlessOS: cachedOS,
 		},
 		{
 			name:            "multiple_billing_entrypoints_rejected",
-			endpoints:       []endpointKind{endpointMessages},
+			endpoints:       []endpointKind{endpointMessages, endpointCountTokens},
 			cacheEntrypoint: "cli",
 			clientUA:        clientUA("cli"),
 			multiEntrypoint: true,
@@ -288,11 +314,20 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, beforeConflicts, fingerprintEntrypointConflictCount.Load())
 					require.NotNil(t, req)
+					require.Equal(t, int64(len(wireBody)), req.ContentLength)
+					require.NotNil(t, req.GetBody)
+					retryBody, retryErr := req.GetBody()
+					require.NoError(t, retryErr)
+					retryBytes, retryErr := io.ReadAll(retryBody)
+					require.NoError(t, retryErr)
+					require.NoError(t, retryBody.Close())
+					require.Equal(t, wireBody, retryBytes)
 					resp, doErr := (&http.Client{Transport: transport}).Do(req)
 					require.NoError(t, doErr)
 					require.NoError(t, resp.Body.Close())
 					require.Equal(t, 1, transport.called)
 					require.Equal(t, wireBody, transport.body)
+					require.Equal(t, gjson.GetBytes(body, "messages").Raw, gjson.GetBytes(transport.body, "messages").Raw)
 					require.Equal(t, tt.wantUA, transport.ua)
 					require.Equal(t, tt.wantStainlessOS, transport.stainlessOS)
 					require.Equal(t, cacheUA(tt.cacheEntrypoint), cache.fingerprint.UserAgent, "账号缓存里的完整 UA 不应被本次请求的入口改写")
@@ -312,12 +347,8 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 
 					headerEP, headerOK := claudeCLIExternalEntrypoint(transport.ua)
 					require.True(t, headerOK)
-					if tt.wantBodyEP != "" && !tt.allowEPMismatch {
+					if tt.wantBodyEP != "" {
 						require.Equal(t, tt.wantBodyEP, headerEP, "同一次出站请求的 UA 入口与 cc_entrypoint 必须一致")
-					}
-					if tt.allowEPMismatch {
-						require.NotEqual(t, tt.wantBodyEP, headerEP)
-						require.Equal(t, "cli", headerEP)
 					}
 
 					wantVersion := tt.wantBodyVersion
@@ -334,7 +365,7 @@ func TestOAuthFingerprintEntrypointFinalRequest(t *testing.T) {
 						}
 					}
 					if strings.Contains(string(transport.body), "ping") || tt.wantExactBody != "" {
-						// 正文仍然只存在于出站 body，不进入错误文本；成功路径这里只确认没有被换成缓存入口。
+						// 正文和凭证不进入 UA 或错误文本。
 						require.NotContains(t, transport.ua, "SESSION_MUST_NOT_LEAK")
 					}
 				})
