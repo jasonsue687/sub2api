@@ -171,12 +171,14 @@ class DeploymentRecoveryTests(unittest.TestCase):
     def test_successful_rollback_updates_history_without_database_restore(self):
         self.old['State']['Health']['Status'] = 'unhealthy'
         current = {**self.data, 'digest': 'sha256:' + 'd'*64, 'release_tag': 'asterflow-v0.2.13-r2'}
+        deploy.record_success(self.data)
         deploy.record_success(current)
         result = deploy.deploy(self.data, rollback=True)
         self.assertEqual(result['status'], 'rolled-back')
         state = deploy.release_state()
         self.assertEqual(state['current']['release_tag'], self.data['release_tag'])
-        self.assertEqual(state['previous']['release_tag'], current['release_tag'])
+        self.assertIsNone(state['previous'])
+        self.assertEqual([r['release_tag'] for r in state['history']], [self.data['release_tag']])
         self.assertTrue(all('pg_restore' not in str(c) for c in deploy.run.call_args_list))
 
 

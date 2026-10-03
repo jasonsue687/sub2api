@@ -128,12 +128,23 @@ def rollback_release(info, state):
     return target.get('release_tag', '') if target else ''
 
 
-def record_success(release, directory=None):
+def record_success(release, directory=None, rollback=False):
     state = release_state()
-    current = state.get('current')
-    if current and current['digest'] != release['digest']:
-        state['previous'] = current
-    state['current'] = clean(release)
+    history = state.get('history') or [r for r in (state.get('previous'), state.get('current')) if r]
+    target = clean(release)
+    if rollback:
+        # Discard reverted releases from the default rollback chain; never bounce
+        # back to the version the operator just rolled back away from.
+        index = next((i for i in range(len(history)-1, -1, -1)
+                      if history[i]['digest'] == release['digest']), None)
+        history = history[:index+1] if index is not None else []
+    if history and history[-1]['digest'] == release['digest']:
+        history[-1] = target
+    else:
+        history.append(target)
+    state['history'] = history[-20:]
+    state['current'] = state['history'][-1]
+    state['previous'] = state['history'][-2] if len(state['history']) > 1 else None
     state['updated_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if directory:
         state['backup'] = str(directory)
@@ -252,7 +263,7 @@ def deploy(release, registry_user='', registry_token='', rollback=False):
     was_healthy = info['State'].get('Health', {}).get('Status') == 'healthy'
     if not pending and already_deployed(info, old_config, release):
         wait_healthy(release['version'])
-        record_success(release)
+        record_success(release, rollback=rollback)
         return {'status': 'unchanged', 'release_tag': release['release_tag'],
                 'image': IMAGE + '@' + release['digest'], 'production_changed': False}
     if pending and release.get('allow_migrations') is not True:
@@ -305,7 +316,7 @@ def deploy(release, registry_user='', registry_token='', rollback=False):
                   'verification': 'container health, HTTP health, version, migration hashes, unchanged PostgreSQL/Redis',
                   'model_request_test': 'not performed'}
         (directory / 'result.json').write_text(json.dumps(result, indent=2))
-        record_success(release, directory)
+        record_success(release, directory, rollback=rollback)
         return result
     except BaseException:
         # Never automatically restore a DB or boot an old binary against a possibly

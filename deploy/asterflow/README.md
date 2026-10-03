@@ -44,7 +44,7 @@ Actions → **AsterFlow Deploy** → Run workflow，选择 `asterflow`：
 
 备份在中央 `/opt/sub2api/backups/asterflow-<UTC时间>-<SHA>/`，权限 0700，包含凭据与数据库，不上传 GitHub。备份目录可读性检查不是完整恢复演练。首次跨版本升级须另外检查迁移、旧程序兼容性与恢复步骤。
 
-成功版本记录为 `/opt/sub2api/automation/state.json`：保存当前及上一个成功发布的 Tag、digest、迁移清单和备份路径，不保存 registry token。失败、预检不会推进成功版本；重复部署同一个 digest 不覆盖上一个版本。status 同时给出真实容器镜像/健康与记录中的版本，不能用记录替代实际容器状态。
+成功版本记录为 `/opt/sub2api/automation/state.json`：保存当前及上一个成功发布的 Tag、digest、迁移清单和备份路径，以及最近 20 个有效版本的回退链，不保存 registry token。失败、预检不会推进成功版本；重复部署同一个 digest 不覆盖上一个版本；回退成功后从默认回退链移除被撤回的版本，避免下一次回退又跳回故障版本。status 同时给出真实容器镜像/健康与记录中的版本，不能用记录替代实际容器状态。
 
 ## 4. 回退
 

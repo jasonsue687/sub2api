@@ -1,4 +1,3 @@
-import copy
 import hashlib
 import json
 from pathlib import Path
@@ -74,6 +73,20 @@ class ReleaseTests(unittest.TestCase):
             # A later failed attempt has not replaced the last successful record.
             info['Config']['Image'] = 'failed:attempt'
             self.assertEqual(deploy.rollback_release(info, state), two['release_tag'])
+
+    def test_rollback_chain_excludes_the_reverted_bad_version(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(deploy, 'ROOT', Path(tmp)):
+            (Path(tmp)/'automation').mkdir()
+            one = release()
+            two = {**one, 'digest': 'sha256:'+'d'*64, 'release_tag': 'asterflow-v0.2.13-r2'}
+            three = {**one, 'digest': 'sha256:'+'e'*64, 'release_tag': 'asterflow-v0.2.13-r3'}
+            for item in (one, two, three):
+                deploy.record_success(item)
+            deploy.record_success(two, rollback=True)
+            state = deploy.release_state()
+            self.assertEqual(state['current'], two)
+            self.assertEqual(state['previous'], one)
+            self.assertNotIn(three, state['history'])
 
     def test_changed_settings_must_not_be_skipped(self):
         data = release(); config = deploy.replacement(data)
