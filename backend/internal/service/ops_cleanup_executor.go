@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicaudit"
 )
 
 const (
@@ -161,4 +163,48 @@ func isMissingRelationError(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "does not exist") && strings.Contains(s, "relation")
+}
+
+// cleanupSystemLogs keeps Anthropic audit metadata for 30 days independently
+// of ordinary runtime logs, including when their retention is zero or disabled.
+// Explicit administrator deletion remains available via the separate cleanup API.
+func cleanupSystemLogs(ctx context.Context, db *sql.DB, now time.Time, runtimeDays, batchSize int) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	if batchSize <= 0 {
+		batchSize = opsCleanupBatchSize
+	}
+	const query = `
+WITH batch AS (
+  SELECT id FROM ops_system_logs
+  WHERE (component = $1 AND created_at < $2)
+     OR ((component IS NULL OR component <> $1)
+         AND ($3 = 0 OR ($3 > 0 AND created_at < $4)))
+  ORDER BY id
+  LIMIT $5
+)
+DELETE FROM ops_system_logs
+WHERE id IN (SELECT id FROM batch)
+`
+	auditCutoff := now.UTC().Add(-anthropicaudit.RetentionDays * 24 * time.Hour)
+	runtimeCutoff := now.UTC().AddDate(0, 0, -runtimeDays)
+	var total int64
+	for {
+		res, err := db.ExecContext(ctx, query, anthropicaudit.Component, auditCutoff, runtimeDays, runtimeCutoff, batchSize)
+		if err != nil {
+			if isMissingRelationError(err) {
+				return total, nil
+			}
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n == 0 {
+			return total, nil
+		}
+	}
 }

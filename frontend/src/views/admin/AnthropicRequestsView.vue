@@ -7,7 +7,7 @@
       </header>
       <form class="card flex flex-wrap items-end gap-4 p-5" @submit.prevent="fetchData(true)">
         <label class="space-y-2 text-sm"><span class="block font-medium">{{ tr('account') }}</span><input v-model="account" data-testid="account" type="number" min="1" step="1" class="input w-44" placeholder="11" required /></label>
-        <label class="space-y-2 text-sm"><span class="block font-medium">{{ tr('window') }}</span><select v-model="hours" class="input w-48"><option :value="1">{{ tr('hour') }}</option><option :value="24">{{ tr('day') }}</option><option :value="168">{{ tr('week') }}</option></select></label>
+        <label class="space-y-2 text-sm"><span class="block font-medium">{{ tr('window') }}</span><select v-model="hours" data-testid="time-window" class="input w-48"><option :value="1">{{ tr('hour') }}</option><option :value="24">{{ tr('day') }}</option><option :value="168">{{ tr('week') }}</option><option :value="720">{{ tr('month') }}</option></select></label>
         <button type="submit" class="btn btn-primary" :disabled="loading">{{ tr(loading ? 'refreshing' : 'refresh') }}</button>
         <label class="flex items-center gap-2 pb-2 text-sm"><input v-model="autoRefresh" type="checkbox" />{{ tr('auto') }}</label>
         <label class="flex items-center gap-2 pb-2 text-sm"><input v-model="onlyMismatch" data-testid="mismatch-only" type="checkbox" />{{ tr('onlyMismatch') }}</label>
