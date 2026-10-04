@@ -8,7 +8,7 @@
 
 会话第一次被官方调度分到某个订阅账号后，绑定会先写入数据库，然后才向上游发请求。之后这个会话只检查原账号：
 
-- 原账号仍满足额度、RPM、并发、模型支持、渠道模型限制和会话容量时，继续用它。
+- 原账号仍满足额度、RPM、并发、模型支持、渠道模型限制、利润控制和会话容量时，继续用它。
 - 原账号限流、额度不足、停用、授权失效、模型不支持、移出分组、容量不足或已被删除时，不改选其他订阅账号。
 - 可安全重试的上游故障只在原账号上有界重试。`same_account_retry_limit` 为 `-1` 时沿用账号的 `pool_mode_retry_count`；大于 0 时再收紧；`0` 连同带截止时间的同账号重试一起禁用。
 - 原账号恢复后，后续请求继续使用原账号；拒绝请求不会改写主绑定。
@@ -57,6 +57,7 @@ Content-Type: application/json
 | reason | 含义 |
 | --- | --- |
 | `channel_model_restricted` | 渠道定价模型列表不允许；按 requested、channel_mapped、upstream 或 response 的调度规则检查 |
+| `profit_control` | 原账号不符合当前请求的利润控制要求，包括倍率缺失、非法或超过阈值；不改写绑定，恢复后继续使用原账号 |
 | `model_unsupported` | 原账号不支持请求模型 |
 | `disabled` / `account_deleted` | 原账号停用、调度关闭或已删除 |
 | `removed_from_pool` / `platform_mismatch` | 当前请求分组或平台不允许原账号 |
@@ -102,7 +103,9 @@ API Key 仍按现有流程鉴权、计费；绑定账号每次按当前请求的
 
 启用严格模式后，数据库绑定才是事实来源。Redis 键 `strict_session_binding:` 只做加速，TTL 为 6 小时。缓存过期、清空、Redis 故障或进程重启都回源数据库，不会让绑定本身过期。Redis 读失败不会被当成未绑定；数据库读失败或写失败会返回 `strict_session_store_unavailable`，不会先用一个还没落库的账号。
 
-并发的第一次请求用 `INSERT ... ON CONFLICT (binding_key) DO UPDATE SET account_id = strict_session_bindings.account_id RETURNING ...`。空更新不改写赢家的账号，但会等冲突事务提交并返回已落库的那一行。输家释放自己占的会话槽，再按赢家的账号继续，不会返回 503。`DO NOTHING` 加同语句查询会读到插入前的快照，因此不采用。
+并发的第一次请求用 `INSERT ... ON CONFLICT (binding_key) DO UPDATE SET account_id = strict_session_bindings.account_id RETURNING ...`。空更新不改写赢家的账号，但会等冲突事务提交并返回已落库的那一行。输家释放自己占的会话槽，再检查赢家的账号；冲突本身不会导致 503，但赢家不符合当前请求的准入条件（例如利润控制）时仍会返回 503。`DO NOTHING` 加同语句查询会读到插入前的快照，因此不采用。
+
+利润控制复用普通调度的请求计价上下文和判定逻辑。在登记会话或占用并发槽之前检查原账号，并把生效的利润检查上下文随选号结果传给现有抢槽后终检；排队期间账号倍率发生变化时，终检拒绝请求并释放并发槽、等待计数和本次会话注册。未启用利润控制时沿用原行为，普通选号、重选和回退逻辑不因本修正而改变。
 
 启用前已经过期的官方粘性缓存无法恢复。若缓存里还留着同一稳定会话 ID 的官方粘性记录，首次分配会把它当作选号线索；这不是历史保证。
 
@@ -155,6 +158,7 @@ API Key 仍按现有流程鉴权、计费；绑定账号每次按当前请求的
 ## 审查修正
 
 - 已绑定会话执行渠道模型限制，受限时返回 `strict_session_account_unavailable` / `channel_model_restricted`。
+- 已绑定会话与并发首写赢家执行利润控制，并保留抢槽后终检；受限时返回 `strict_session_account_unavailable` / `profit_control`。
 - 删除严格绑定的进程内换组、第三方转发与后台配置。对应的 simple 兜底缓存范围和跨组映射问题随路径移除而消除。
 - 会话身份只由客户端会话 ID 决定；更换 API Key 不创建新绑定。管理页不再提供终端用户设置。
 - 流已经开始写出后，通过请求入口的写出量和 `streamStarted` 检测中断，不重放。

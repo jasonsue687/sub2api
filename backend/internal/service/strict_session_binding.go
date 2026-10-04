@@ -453,6 +453,9 @@ func (s *GatewayService) SelectStrictSessionAccount(
 	if plan == nil || !plan.Active {
 		return nil, fmt.Errorf("%w: strict session plan is inactive", ErrStrictSessionStore)
 	}
+	// Bound accounts skip ordinary selection, so install its profit gate here.
+	// Keep it on the selector context for concurrent winners and post-slot checks.
+	ctx = s.withGatewayProfitControlGate(ctx, groupID)
 	requestPlatform := plan.RequestPlatform
 	selector := StrictSessionSelector{
 		Store: s.strictSessionStore,
@@ -624,6 +627,9 @@ func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) ||
 		s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 		return "channel_model_restricted", true
+	}
+	if !s.isGatewayAccountProfitEligible(ctx, account) {
+		return "profit_control", true
 	}
 	if !s.isAccountSchedulableForWindowCost(ctx, account, true) {
 		return "window_cost_exhausted", true

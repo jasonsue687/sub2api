@@ -201,6 +201,7 @@ func newStrictGateway(cfg *strictMessagesTestConfig, repo service.AccountReposit
 		nil,
 		&cfg.Config,
 		snapshot,
+		cfg.concurrency,
 		nil,
 		nil,
 		nil,
@@ -208,8 +209,7 @@ func newStrictGateway(cfg *strictMessagesTestConfig, repo service.AccountReposit
 		nil,
 		nil,
 		nil,
-		nil,
-		nil,
+		cfg.sessions,
 		nil,
 		nil,
 		settings,
@@ -553,6 +553,8 @@ type strictMessagesTestConfig struct {
 	binding        config.GatewayStrictSessionBindingConfig
 	legacyFallback map[string]string
 	channels       *service.ChannelService
+	concurrency    *service.ConcurrencyService
+	sessions       service.SessionLimitCache
 }
 
 type strictHTTPSettingsRepo struct {
