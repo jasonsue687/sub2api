@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicaudit"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
@@ -61,6 +62,9 @@ INSERT INTO ops_error_logs (
 )`
 
 func NewOpsRepository(db *sql.DB) service.OpsRepository {
+	anthropicaudit.StartCapturePersist(func(ctx context.Context, rec anthropicaudit.Record) error {
+		return insertAnthropicCapture(ctx, db, rec)
+	})
 	return &opsRepository{db: db}
 }
 
@@ -858,6 +862,7 @@ func (r *opsRepository) DeleteSystemLogs(ctx context.Context, filter *service.Op
 	if err != nil {
 		return 0, err
 	}
+	r.deleteMatchingCaptures(ctx, filter)
 	return res.RowsAffected()
 }
 

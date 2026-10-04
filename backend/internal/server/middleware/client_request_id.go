@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicaudit"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
@@ -31,7 +32,7 @@ func ClientRequestID() gin.HandlerFunc {
 			}
 			c.Header(clientRequestIDHeader, v)
 			ctx := context.WithValue(c.Request.Context(), ctxkey.ClientRequestID, v)
-			c.Request = c.Request.WithContext(ctx)
+			c.Request = c.Request.WithContext(anthropicaudit.WithTracker(ctx, c.Request.URL.Path))
 			c.Next()
 			return
 		}
@@ -41,7 +42,7 @@ func ClientRequestID() gin.HandlerFunc {
 		ctx := context.WithValue(c.Request.Context(), ctxkey.ClientRequestID, id)
 		requestLogger := logger.FromContext(ctx).With(zap.String("client_request_id", strings.TrimSpace(id)))
 		ctx = logger.IntoContext(ctx, requestLogger)
-		c.Request = c.Request.WithContext(ctx)
+		c.Request = c.Request.WithContext(anthropicaudit.WithTracker(ctx, c.Request.URL.Path))
 		c.Next()
 	}
 }
