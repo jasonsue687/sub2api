@@ -277,7 +277,7 @@ func (s *FailoverState) HandleFailoverError(
 		gatewayService.TempUnscheduleRetryableError(ctx, accountID, failoverErr)
 	}
 
-	// 严格绑定只保留原账号。重试耗尽后由调用方走指定第三方或返回明确错误。
+	// 严格绑定只保留原账号。重试耗尽后返回明确错误，由上层决定路由。
 	if s.strictBinding {
 		logger.FromContext(ctx).Warn("strict_session.cross_account_switch_blocked",
 			zap.Int64("account_id", accountID),

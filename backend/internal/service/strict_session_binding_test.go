@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -367,7 +364,7 @@ func TestBoundAccountUnavailableReasonsDoNotReselect(t *testing.T) {
 			},
 			LoadAccount: func(context.Context, int64) (*Account, error) { return nil, ErrAccountNotFound },
 		}).Select(context.Background(), &StrictSessionPlan{BindingKey: "gone", SessionFingerprint: "fp"}, &groupID)
-		var fallback *StrictSessionFallbackError
+		var fallback *StrictSessionAccountUnavailableError
 		require.ErrorAs(t, err, &fallback)
 		require.Equal(t, "account_deleted", fallback.Reason)
 		require.Equal(t, int64(42), fallback.AccountID)
@@ -427,7 +424,7 @@ func TestAccountRecoveryReturnsToOriginalBinding(t *testing.T) {
 		},
 	}
 	_, err := selector.Select(ctx, &StrictSessionPlan{BindingKey: "recover"}, &groupID)
-	var fallback *StrictSessionFallbackError
+	var fallback *StrictSessionAccountUnavailableError
 	require.ErrorAs(t, err, &fallback)
 	require.Equal(t, "rate_limited", fallback.Reason)
 
@@ -438,79 +435,6 @@ func TestAccountRecoveryReturnsToOriginalBinding(t *testing.T) {
 	got, err := store.Get(ctx, "recover")
 	require.NoError(t, err)
 	require.Equal(t, int64(5), got.AccountID)
-}
-
-func TestThirdPartyResultDoesNotChangeBinding(t *testing.T) {
-	store := presetStore(t, "tp", 6)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/v1/messages", r.URL.Path)
-		require.Equal(t, "relay-secret", r.Header.Get("x-api-key"))
-		require.Empty(t, r.Header.Get("Authorization"))
-		body, _ := io.ReadAll(r.Body)
-		require.Contains(t, string(body), "hello")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	t.Cleanup(upstream.Close)
-
-	cfg := strictTestConfig(true)
-	cfg.ThirdParty.Enabled = true
-	cfg.ThirdParty.BaseURL = upstream.URL
-	cfg.ThirdParty.APIKey = "relay-secret"
-	svc := &GatewayService{}
-	recorder := httptest.NewRecorder()
-	err := svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), http.Header{"Authorization": []string{"Bearer client"}}, []byte(`{"messages":[{"content":"hello"}]}`), recorder)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, recorder.Code)
-	require.Contains(t, recorder.Body.String(), `"ok":true`)
-
-	got, err := store.Get(context.Background(), "tp")
-	require.NoError(t, err)
-	require.Equal(t, int64(6), got.AccountID)
-
-	upstream.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "nope", http.StatusBadGateway)
-	})
-	err = svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"messages":[]}`), httptest.NewRecorder())
-	var statusErr *StrictThirdPartyStatusError
-	require.ErrorAs(t, err, &statusErr)
-	require.Equal(t, http.StatusBadGateway, statusErr.StatusCode)
-	got, err = store.Get(context.Background(), "tp")
-	require.NoError(t, err)
-	require.Equal(t, int64(6), got.AccountID)
-}
-
-func TestThirdPartyPartialBodyIsNotRetried(t *testing.T) {
-	cfg := strictTestConfig(true)
-	cfg.ThirdParty.Enabled = true
-	cfg.ThirdParty.BaseURL = "https://relay.example"
-	cfg.ThirdParty.APIKey = "relay-secret"
-	svc := &GatewayService{strictSessionGateway: strictSessionGateway{strictThirdPartyHTTP: &http.Client{Transport: strictRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-			Body:       io.NopCloser(&errAfterReader{data: []byte("data: partial\n\n")}),
-			Request:    r,
-		}, nil
-	})}}}
-	recorder := httptest.NewRecorder()
-	err := svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"stream":true}`), recorder)
-	var statusErr *StrictThirdPartyStatusError
-	require.ErrorAs(t, err, &statusErr)
-	require.True(t, statusErr.WroteBody)
-	require.Contains(t, recorder.Body.String(), "data: partial")
-	require.NotContains(t, recorder.Body.String(), "relay-secret")
-}
-
-func TestDecideStrictFallback(t *testing.T) {
-	require.Equal(t, StrictFallbackStreamInterrupted, DecideStrictFallback(StrictFallbackInput{ResponseWritten: true, RetryableUpstream: true, ThirdPartyEnabled: true}))
-	require.Equal(t, StrictFallbackPassthrough, DecideStrictFallback(StrictFallbackInput{ClientCanceled: true}))
-	require.Equal(t, StrictFallbackPassthrough, DecideStrictFallback(StrictFallbackInput{RetryableUpstream: false}))
-	require.Equal(t, StrictFallbackThirdParty, DecideStrictFallback(StrictFallbackInput{AccountSide: true, ThirdPartyEnabled: true}))
-	require.Equal(t, StrictFallbackError, DecideStrictFallback(StrictFallbackInput{AccountSide: true, ThirdPartyEnabled: false}))
-	require.Equal(t, StrictFallbackThirdParty, DecideStrictFallback(StrictFallbackInput{RetryableUpstream: true, ThirdPartyEnabled: true}))
-	require.Equal(t, StrictFallbackError, DecideStrictFallback(StrictFallbackInput{RetryableUpstream: true, ThirdPartyEnabled: false}))
 }
 
 func TestBindingSurvivesDisableAndReenable(t *testing.T) {
@@ -606,101 +530,6 @@ func TestGenerateSessionHashRedactsIdentityWhenStrict(t *testing.T) {
 	require.NotContains(t, logged, deviceID)
 	require.NotContains(t, logged, metadata)
 	require.Contains(t, logged, "session_fp")
-}
-
-func TestThirdPartyPassthrough4xxRejectsRedirectAndFlushes(t *testing.T) {
-	var redirected atomic.Int32
-	secret := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		redirected.Add(1)
-		_, _ = w.Write([]byte("stolen"))
-	}))
-	t.Cleanup(secret.Close)
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/redirect/v1/messages"):
-			http.Redirect(w, r, secret.URL, http.StatusFound)
-		case strings.HasSuffix(r.URL.Path, "/client/v1/messages"):
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"type":"invalid_request_error","message":"model not supported"}`))
-		default:
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			flusher, ok := w.(http.Flusher)
-			if !assert.True(t, ok, "test server must support streaming") {
-				return
-			}
-			_, _ = w.Write([]byte("data: one\n\n"))
-			flusher.Flush()
-			_, _ = w.Write([]byte("data: two\n\n"))
-			flusher.Flush()
-		}
-	}))
-	t.Cleanup(upstream.Close)
-
-	cfg := strictTestConfig(true)
-	cfg.ThirdParty.Enabled = true
-	cfg.ThirdParty.APIKey = "relay-secret"
-	cfg.ThirdParty.TimeoutSeconds = 2
-	svc := &GatewayService{}
-
-	cfg.ThirdParty.BaseURL = upstream.URL + "/client"
-	recorder := httptest.NewRecorder()
-	err := svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"model":"claude"}`), recorder)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusBadRequest, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "model not supported")
-	require.NotContains(t, recorder.Body.String(), "relay-secret")
-
-	cfg.ThirdParty.BaseURL = upstream.URL + "/redirect"
-	err = svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{}`), httptest.NewRecorder())
-	require.Error(t, err)
-	require.Zero(t, redirected.Load())
-
-	cfg.ThirdParty.BaseURL = upstream.URL + "/stream"
-	streamRecorder := httptest.NewRecorder()
-	err = svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"stream":true}`), streamRecorder)
-	require.NoError(t, err)
-	require.True(t, streamRecorder.Flushed)
-	require.Contains(t, streamRecorder.Body.String(), "data: two")
-}
-
-func TestThirdPartyHeaderTimeoutDoesNotCutActiveStream(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/hang-header/v1/messages") {
-			time.Sleep(1500 * time.Millisecond)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher, ok := w.(http.Flusher)
-		if !assert.True(t, ok, "test server must support streaming") {
-			return
-		}
-		for i := 0; i < 4; i++ {
-			_, _ = w.Write([]byte("data: chunk\n\n"))
-			flusher.Flush()
-			time.Sleep(400 * time.Millisecond)
-		}
-	}))
-	t.Cleanup(upstream.Close)
-
-	cfg := strictTestConfig(true)
-	cfg.ThirdParty.Enabled = true
-	cfg.ThirdParty.APIKey = "relay-secret"
-	cfg.ThirdParty.TimeoutSeconds = 1
-	cfg.ThirdParty.BaseURL = upstream.URL + "/hang-header"
-	svc := &GatewayService{}
-	err := svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{}`), httptest.NewRecorder())
-	require.Error(t, err)
-
-	cfg.ThirdParty.BaseURL = upstream.URL + "/slow-body"
-	recorder := httptest.NewRecorder()
-	err = svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"stream":true}`), recorder)
-	require.NoError(t, err)
-	require.Equal(t, 4, bytes.Count(recorder.Body.Bytes(), []byte("data: chunk")))
 }
 
 func TestStrictBoundWaitStaysOnSameAccount(t *testing.T) {
@@ -832,25 +661,4 @@ func (s stubRPMCache) IncrementRPM(context.Context, int64) (int, error) { return
 func (s stubRPMCache) GetRPM(context.Context, int64) (int, error)       { return s.count, nil }
 func (stubRPMCache) GetRPMBatch(context.Context, []int64) (map[int64]int, error) {
 	return nil, nil
-}
-
-type strictRoundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f strictRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-type errAfterReader struct {
-	data []byte
-	n    int
-}
-
-func (r *errAfterReader) Read(p []byte) (int, error) {
-	if r.n >= len(r.data) {
-		return 0, io.ErrUnexpectedEOF
-	}
-	n := copy(p, r.data[r.n:])
-	r.n += n
-	if r.n >= len(r.data) {
-		return n, io.ErrUnexpectedEOF
-	}
-	return n, nil
 }

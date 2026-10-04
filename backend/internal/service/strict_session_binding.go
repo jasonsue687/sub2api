@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"sync"
 	"time"
 
@@ -51,15 +50,15 @@ type StrictSessionBindingStore interface {
 	Create(ctx context.Context, binding *StrictSessionBinding) (*StrictSessionBinding, error)
 }
 
-// StrictSessionFallbackError 表示原账号不能承接，且禁止改选其他订阅账号。
-type StrictSessionFallbackError struct {
+// StrictSessionAccountUnavailableError 表示原账号不能承接，且禁止改选其他订阅账号。
+type StrictSessionAccountUnavailableError struct {
 	AccountID int64
 	Reason    string
 }
 
-func (e *StrictSessionFallbackError) Error() string {
+func (e *StrictSessionAccountUnavailableError) Error() string {
 	if e == nil {
-		return "strict session fallback"
+		return "strict session account unavailable"
 	}
 	return fmt.Sprintf("strict session bound account %d unavailable: %s", e.AccountID, e.Reason)
 }
@@ -346,8 +345,7 @@ func ProvideGatewayService(
 type strictSessionGateway struct {
 	// strictSessionStore 是 Claude Messages 永久绑定的数据库事实来源。
 	// 为 nil 且功能关闭时不影响官方调度；功能开启但未注入时失败关闭，不重新选号。
-	strictSessionStore   StrictSessionBindingStore
-	strictThirdPartyHTTP *http.Client
+	strictSessionStore StrictSessionBindingStore
 }
 
 func (s *GatewayService) logStickyMetadataSession(ctx context.Context, uid *ParsedUserID) {
@@ -543,34 +541,34 @@ func (s StrictSessionSelector) selectBound(ctx context.Context, accountID int64)
 	account, err := s.LoadAccount(ctx, accountID)
 	if err != nil {
 		if errors.Is(err, ErrAccountNotFound) {
-			return nil, &StrictSessionFallbackError{AccountID: accountID, Reason: "account_deleted"}
+			return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: "account_deleted"}
 		}
 		return nil, fmt.Errorf("%w: load account: %w", ErrStrictSessionStore, err)
 	}
 	if account == nil {
-		return nil, &StrictSessionFallbackError{AccountID: accountID, Reason: "account_deleted"}
+		return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: "account_deleted"}
 	}
 	if s.BlockReason != nil {
 		if reason, blocked := s.BlockReason(ctx, account); blocked {
-			return nil, &StrictSessionFallbackError{AccountID: accountID, Reason: reason}
+			return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: reason}
 		}
 	}
 	if s.Acquire == nil {
 		s.releaseSession(ctx, account)
-		return nil, &StrictSessionFallbackError{AccountID: accountID, Reason: "concurrency_exhausted"}
+		return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: "concurrency_exhausted"}
 	}
 	selected, err := s.Acquire(ctx, account)
 	if err != nil {
 		s.releaseSession(ctx, account)
-		var fallback *StrictSessionFallbackError
+		var fallback *StrictSessionAccountUnavailableError
 		if errors.As(err, &fallback) {
 			return nil, fallback
 		}
-		return nil, &StrictSessionFallbackError{AccountID: accountID, Reason: "concurrency_exhausted"}
+		return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: "concurrency_exhausted"}
 	}
 	if selected == nil || selected.Account == nil {
 		s.releaseSession(ctx, account)
-		return nil, &StrictSessionFallbackError{AccountID: accountID, Reason: "concurrency_exhausted"}
+		return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: "concurrency_exhausted"}
 	}
 	return selected, nil
 }
@@ -621,6 +619,12 @@ func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *
 	if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel) {
 		return "model_unsupported", true
 	}
+	// Permanent binding never bypasses the current channel's pricing allowlist.
+	// Upstream-based pricing must resolve this specific account's model mapping.
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) ||
+		s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
+		return "channel_model_restricted", true
+	}
 	if !s.isAccountSchedulableForWindowCost(ctx, account, true) {
 		return "window_cost_exhausted", true
 	}
@@ -661,7 +665,7 @@ func (s *GatewayService) strictPlatformAllowed(account *Account, requestPlatform
 
 func (s *GatewayService) acquireStrictBoundAccount(ctx context.Context, account *Account) (*AccountSelectionResult, error) {
 	if account == nil {
-		return nil, &StrictSessionFallbackError{Reason: "account_deleted"}
+		return nil, &StrictSessionAccountUnavailableError{Reason: "account_deleted"}
 	}
 	result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
 	acquired := err == nil && result != nil && result.Acquired
@@ -681,7 +685,7 @@ func (s *GatewayService) acquireStrictBoundAccount(ctx context.Context, account 
 			MaxWaiting:     cfg.StickySessionMaxWaiting,
 		})
 	}
-	return nil, &StrictSessionFallbackError{AccountID: account.ID, Reason: "concurrency_exhausted"}
+	return nil, &StrictSessionAccountUnavailableError{AccountID: account.ID, Reason: "concurrency_exhausted"}
 }
 
 // strictBoundWaitAllowed 只允许在原账号上有界等待，不允许换号。

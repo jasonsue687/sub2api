@@ -88,12 +88,33 @@ func TestStrictSessionErrorIsRecognizable(t *testing.T) {
 	handler := &GatewayHandler{}
 	sessionID := "c72554f2-1234-5678-abcd-123456789abc"
 	c.Request.Header.Set("X-Session-Id", sessionID)
-	handler.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorFallbackRequired, "rate_limited", false)
+	handler.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorAccountUnavailable, "rate_limited", false)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Equal(t, strictSessionErrorFallbackRequired, recorder.Header().Get(strictSessionErrorHeader))
+	require.Equal(t, strictSessionErrorAccountUnavailable, recorder.Header().Get(strictSessionErrorHeader))
 	require.Empty(t, recorder.Header().Get("X-Sub2API-Bound-Account-Id"))
 	require.Contains(t, recorder.Body.String(), `"type":"session_binding_error"`)
-	require.Contains(t, recorder.Body.String(), `"code":"strict_session_fallback_required"`)
+	require.Contains(t, recorder.Body.String(), `"code":"strict_session_account_unavailable"`)
+	require.Contains(t, recorder.Body.String(), `"reason":"rate_limited"`)
 	require.NotContains(t, recorder.Body.String(), sessionID)
 	require.NotContains(t, recorder.Body.String(), "42")
+}
+
+func TestStrictUpstreamFailureReturnsAccountUnavailable(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			fs := NewFailoverState(10, true)
+			fs.EnableStrictBinding(0)
+			h := &GatewayHandler{}
+			action := h.handleStrictUpstreamFailover(c, fs, &strictSessionRuntime{Active: true}, nil, &service.Account{ID: 7, Platform: service.PlatformAnthropic}, &service.UpstreamFailoverError{StatusCode: status}, "bound", false, c.Writer.Size(), nil)
+			require.Equal(t, strictFlowStop, action)
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			require.Equal(t, strictSessionErrorAccountUnavailable, rec.Header().Get(strictSessionErrorHeader))
+			require.Contains(t, rec.Body.String(), `"reason":"upstream_exhausted"`)
+			require.Zero(t, fs.SwitchCount)
+			require.Empty(t, fs.FailedAccountIDs)
+		})
+	}
 }

@@ -489,7 +489,6 @@ func settingsAuditRequest(req UpdateSettingsRequest) UpdateSettingsRequest {
 	req.TencentCaptchaCloudSecretID = strings.TrimSpace(req.TencentCaptchaCloudSecretID)
 	req.TencentCaptchaCloudSecretKey = strings.TrimSpace(req.TencentCaptchaCloudSecretKey)
 	req.AliyunCaptchaAccessKeySecret = strings.TrimSpace(req.AliyunCaptchaAccessKeySecret)
-	req.StrictSessionThirdPartyAPIKey = ""
 	return req
 }
 

@@ -83,8 +83,6 @@ func TestStrictSettingsRefreshFailureRetainsWholePolicy(t *testing.T) {
 		t.Run(map[bool]string{true: "enabled", false: "disabled"}[enabled], func(t *testing.T) {
 			cfg := config.DefaultStrictSessionBindingConfig()
 			cfg.Enabled, cfg.SessionHeader, cfg.SameAccountRetryLimit = enabled, "X-Custom-Session", 3
-			cfg.FallbackOrder, cfg.FallbackGroupID = config.StrictFallbackOrderThirdPartyFirst, 91
-			cfg.ThirdParty = config.GatewayStrictThirdPartyConfig{Enabled: true, BaseURL: "https://relay.example", APIKey: "test-secret", TimeoutSeconds: 17}
 			repo := &strictSettingsRepo{values: strictSettingsValues(cfg)}
 			s := NewSettingService(repo, nil)
 			before, err := s.StrictSessionBindingConfig(context.Background())
@@ -105,7 +103,6 @@ func TestStrictSettingsRefreshFailureRetainsWholePolicy(t *testing.T) {
 			after, err = s.StrictSessionBindingConfig(context.Background())
 			require.NoError(t, err)
 			require.False(t, after.Enabled)
-			require.Empty(t, after.ThirdParty.APIKey)
 		})
 	}
 }
@@ -130,10 +127,8 @@ func TestStrictSettingsInvalidStoredValuesDoNotDisableBinding(t *testing.T) {
 	for _, values := range []map[string]string{
 		{SettingKeyStrictSessionBindingEnabled: "broken"},
 		{SettingKeyStrictSessionSameAccountRetryLimit: "not-an-integer"},
-		{SettingKeyStrictSessionFallbackGroupID: "-1"},
-		{SettingKeyStrictSessionThirdPartyTimeoutSeconds: "-1"},
-		{SettingKeyStrictSessionFallbackOrder: "unknown"},
-		{SettingKeyStrictSessionThirdPartyEnabled: "true"},
+		{SettingKeyStrictSessionSameAccountRetryLimit: "-2"},
+		{SettingKeyStrictSessionSessionHeader: "bad header"},
 	} {
 		repo := &strictSettingsRepo{values: values}
 		s := NewSettingService(repo, nil)
@@ -202,7 +197,6 @@ func TestStrictSettingsRequestSnapshotSurvivesAdminSave(t *testing.T) {
 	requestCtx := WithStrictSessionBindingConfig(context.Background(), before)
 	next := before
 	next.Enabled = false
-	next.ThirdParty = config.GatewayStrictThirdPartyConfig{Enabled: true, BaseURL: "https://new.example", APIKey: "new-secret"}
 	require.NoError(t, s.persistSystemSettings(context.Background(), strictSettingsValues(next)))
 	actual, err := gw.EffectiveStrictSessionBinding(requestCtx)
 	require.NoError(t, err)
@@ -214,4 +208,18 @@ func TestStrictSettingsRequestSnapshotSurvivesAdminSave(t *testing.T) {
 	later, err := gw.PrepareStrictSession(context.Background(), input)
 	require.NoError(t, err)
 	require.False(t, later.Active)
+}
+
+func TestStrictSettingsIgnoreLegacyRoutingTargets(t *testing.T) {
+	repo := &strictSettingsRepo{values: map[string]string{
+		"strict_session_fallback_order":              "unknown",
+		"strict_session_fallback_group_id":           "-1",
+		"strict_session_third_party_enabled":         "true",
+		"strict_session_third_party_base_url":        "not-a-url",
+		"strict_session_third_party_api_key":         "legacy-secret",
+		"strict_session_third_party_timeout_seconds": "invalid",
+	}}
+	cfg, err := NewSettingService(repo, nil).StrictSessionBindingConfig(context.Background())
+	require.NoError(t, err, "obsolete routing settings cannot block startup or enable internal routing")
+	require.Equal(t, config.DefaultStrictSessionBindingConfig(), cfg)
 }

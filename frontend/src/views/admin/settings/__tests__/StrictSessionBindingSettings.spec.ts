@@ -15,7 +15,7 @@ describe('StrictSessionBindingSettings', () => {
   it('emits editable session settings without mutating the parent form', async () => {
     const initial = Object.freeze({ ...strictSessionBindingFormDefaults })
     const wrapper = mount(StrictSessionBindingSettings, {
-      props: { form: initial, groups: [] },
+      props: { form: initial },
     })
     const latestForm = () => {
       const events = wrapper.emitted('update:form')!
@@ -37,6 +37,9 @@ describe('StrictSessionBindingSettings', () => {
     expect(payload.strict_session_same_account_retry_limit).toBe(2)
     expect(payload.strict_session_binding_enabled).toBe(false)
     expect(payload.strict_session_session_header).toBe('X-Conversation-Id')
+    expect(Object.keys(payload)).toHaveLength(3)
+    expect(wrapper.find('select').exists()).toBe(false)
+    expect(wrapper.find('input[type="password"]').exists()).toBe(false)
     expect(payload).not.toHaveProperty('strict_session_end_user_header')
     expect(payload).not.toHaveProperty('strict_session_end_user_header_trusted')
   })

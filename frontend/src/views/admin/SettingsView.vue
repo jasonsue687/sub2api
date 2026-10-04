@@ -203,7 +203,7 @@
 
         <!-- Tab: Gateway -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
-          <StrictSessionBindingSettings :form="form" :groups="strictFallbackGroups" @update:form="Object.assign(form, $event)" />
+          <StrictSessionBindingSettings :form="form" @update:form="Object.assign(form, $event)" />
           <!-- Overload Cooldown (529) Settings -->
           <div class="card">
             <div
@@ -9034,7 +9034,6 @@ import BackupSettings from "@/views/admin/BackupView.vue";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
 import StrictSessionBindingSettings from "@/views/admin/settings/StrictSessionBindingSettings.vue";
 import {
-  clearStrictSessionBindingSecret,
   strictSessionBindingFormDefaults,
   strictSessionBindingUpdatePayload,
 } from "@/views/admin/settings/strictSessionBindingForm";
@@ -9190,7 +9189,6 @@ const adminApiKeyMasked = ref("");
 const adminApiKeyOperating = ref(false);
 const newAdminApiKey = ref("");
 const subscriptionGroups = ref<AdminGroup[]>([]);
-const strictFallbackGroups = ref<AdminGroup[]>([]);
 
 // Upstream billing probe state
 const upstreamBillingProbeLoading = ref(true);
@@ -9746,7 +9744,6 @@ type SettingsForm = Omit<
   oidc_connect_client_secret: string;
   github_oauth_client_secret: string;
   google_oauth_client_secret: string;
-  strict_session_third_party_api_key: string;
   force_email_on_third_party_signup: boolean;
   openai_low_upstream_rate_priority_enabled: boolean;
   openai_oauth_scheduling_rate_multiplier: number | "" | null;
@@ -11136,7 +11133,6 @@ async function loadSettings() {
     );
     registrationEmailSuffixWhitelistDraft.value = "";
     form.smtp_password = "";
-    clearStrictSessionBindingSecret(form);
     smtpPasswordManuallyEdited.value = false;
     form.turnstile_secret_key = "";
     form.tencent_captcha_app_secret_key = "";
@@ -11241,14 +11237,8 @@ async function loadSubscriptionGroups() {
         (group) =>
           group.subscription_type === "subscription" && group.status === "active",
       );
-    strictFallbackGroups.value = groups.filter(
-      (group) =>
-        group.status === "active" &&
-        (group.platform === "anthropic" || group.platform === "antigravity"),
-    );
   } catch (_error: unknown) {
     subscriptionGroups.value = [];
-    strictFallbackGroups.value = [];
   }
 }
 
@@ -11885,7 +11875,6 @@ async function saveSettings() {
     );
     registrationEmailSuffixWhitelistDraft.value = "";
     form.smtp_password = "";
-    clearStrictSessionBindingSecret(form);
     smtpPasswordManuallyEdited.value = false;
     form.turnstile_secret_key = "";
     form.aliyun_captcha_access_key_secret = "";

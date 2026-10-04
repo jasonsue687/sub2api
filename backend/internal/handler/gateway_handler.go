@@ -666,7 +666,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 成功请求保持既有空闲超时语义（会话按最后活动时间过期）。
 	sessionSlotAccounts := make(map[int64]*service.Account)
 	upstreamServedSession := false
-	h.bindStrictFallbackActivator(c, strictRT, &currentAPIKey, &currentSubscription, &sessionKey, &hasBoundSession, &sessionBoundAccountID, &fallbackUsed, sessionSlotAccounts)
 	defer func() {
 		if upstreamServedSession {
 			return
@@ -703,10 +702,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				selection, err = h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
 			}
 			if err != nil {
-				if h.strictSelectFailureHandled(c, strictRT, reqLog, err, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
-					if retryWithFallback {
-						break
-					}
+				if h.strictSelectFailureHandled(c, strictRT, reqLog, err, streamStarted, writerSizeAtEntry) {
 					return
 				}
 				if failoverClientGone(c) {
@@ -790,10 +786,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("model", reqModel),
 						zap.String("platform", platform),
 					)
-					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
-						if retryWithFallback {
-							break
-						}
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
 						return
 					}
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
@@ -808,10 +801,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 					)
-					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
-						if retryWithFallback {
-							break
-						}
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
 						return
 					}
 					h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", gatewayQueueFullCode, "Too many pending requests, please retry later", streamStarted)
@@ -838,10 +828,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if err != nil {
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
-					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", true, true, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
-						if retryWithFallback {
-							break
-						}
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
 						return
 					}
 					h.handleConcurrencyError(c, err, "account", streamStarted)
@@ -858,20 +845,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					accountReleaseFunc()
 				}
 				reqLog.Debug("gateway.account_slot_profit_vetoed", zap.Int64("account_id", account.ID), zap.String("reason", reason))
-				if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "profit_control", true, false, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
-					if retryWithFallback {
-						break
-					}
+				if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "profit_control", streamStarted, writerSizeAtEntry) {
 					return
 				}
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
 					reqLog.Warn("gateway.profit_veto_attempts_exhausted", zap.Int("profit_veto_count", fs.ProfitVetoCount()))
-					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "profit_control", false, true, body, streamStarted, writerSizeAtEntry, &retryWithFallback) {
-						if retryWithFallback {
-							break
-						}
-						return
-					}
 					markOpsRoutingCapacityLimited(c)
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", profitVetoExhaustedMessage, streamStarted)
 					return
@@ -1117,16 +1095,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
-					switch h.handleStrictUpstreamFailover(c, fs, strictRT, reqLog, account, failoverErr, body, sessionKey, streamStarted, writerSizeAtEntry, writerSizeBeforeForward, sessionSlotAccounts) {
+					switch h.handleStrictUpstreamFailover(c, fs, strictRT, reqLog, account, failoverErr, sessionKey, streamStarted, writerSizeAtEntry, sessionSlotAccounts) {
 					case strictFlowStop:
 						return
-					case strictFlowRetryGroup:
-						retryWithFallback = true
 					case strictFlowSameAccount:
 						continue
-					}
-					if retryWithFallback {
-						break
 					}
 					if c.Writer.Size() != writerSizeBeforeForward {
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
@@ -1150,7 +1123,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				upstreamErrorAlreadyCommunicated := gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
-					wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
+					if strictRT.locksAccount() {
+						sizeBeforeError := c.Writer.Size()
+						h.rejectStrictAccount(c, strictRT, reqLog, account.ID, "upstream_failed", streamStarted, writerSizeAtEntry)
+						wroteFallback = c.Writer.Size() != sizeBeforeError
+					} else {
+						wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
+					}
 				}
 				forwardFailedFields := []zap.Field{
 					zap.Int64("account_id", account.ID),
@@ -2043,7 +2022,7 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 	h.handleStreamingAwareErrorWithCode(c, status, errType, "", message, streamStarted)
 }
 
-func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool) {
+func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool, reasons ...string) {
 	if streamStarted {
 		// 响应状态码已固化为 200（ping/部分数据已 flush），错误只能就地以 SSE 帧回传。
 		// 标记本次流内错误，供 ops_error_logger 补记——否则该中间件按 status>=400 采集，
@@ -2066,6 +2045,9 @@ func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, statu
 			if code != "" {
 				errorCode = `,"code":` + strconv.Quote(code)
 			}
+			if len(reasons) > 0 && reasons[0] != "" {
+				errorCode += `,"reason":` + strconv.Quote(reasons[0])
+			}
 			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + errorCode + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
@@ -2076,7 +2058,7 @@ func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, statu
 	}
 
 	// Normal case: return JSON response with proper status code
-	h.errorResponseWithCode(c, status, errType, code, message)
+	h.errorResponseWithCode(c, status, errType, code, message, reasons...)
 }
 
 // ensureForwardErrorResponse 在 Forward 返回错误但尚未写响应时补写统一错误响应。
@@ -2176,10 +2158,13 @@ func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, mess
 	h.errorResponseWithCode(c, status, errType, "", message)
 }
 
-func (h *GatewayHandler) errorResponseWithCode(c *gin.Context, status int, errType, code, message string) {
+func (h *GatewayHandler) errorResponseWithCode(c *gin.Context, status int, errType, code, message string, reasons ...string) {
 	errorObject := gin.H{"type": errType, "message": message}
 	if code != "" {
 		errorObject["code"] = code
+	}
+	if len(reasons) > 0 && reasons[0] != "" {
+		errorObject["reason"] = reasons[0]
 	}
 	c.JSON(status, gin.H{
 		"type":  "error",

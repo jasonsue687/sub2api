@@ -1,25 +1,11 @@
 const strictSession = {
         title: 'Strict session binding',
-        description: 'Bind subscription accounts by client session ID alone. The same session keeps its binding across API key changes; no end-user identity is required. When that account cannot serve, try the fallback group and the third-party relay in the selected order. Requests never return to the origin group pool. Saving applies immediately, without a restart.',
+        description: 'Permanently bind each client session ID to its original account, even when the API key changes. If the account is unavailable, return an error and let the caller decide how to reroute. Changes take effect without restarting.',
         enabled: 'Enable strict session binding',
         enabledHint: 'Enabled by default. Disabling restores normal scheduling and may switch accounts. Stored bindings remain and resume when re-enabled.',
-        fallbackOrder: 'Fallback order',
-        fallbackOrderHint: 'The next target is tried only when the first one fails before any response bytes. A started stream is never spliced.',
-        orderGroupFirst: 'Fallback group, then third party',
-        orderThirdPartyFirst: 'Third party, then fallback group',
-        fallbackGroup: 'Fallback group',
-        fallbackGroupNone: 'Do not use a fallback group',
-        fallbackGroupHint: 'Only active Anthropic or Antigravity groups. A request whose own group matches this id skips the target. Sticky selection inside the fallback group does not change the primary binding.',
         retryLimit: 'Same-account retry limit',
         retryLimitHint: '-1 uses the account retry count, 0 disables same-account retries, and a positive number is a fixed cap.',
         sessionHeader: 'Extra session header',
-        thirdPartyEnabled: 'Enable third-party relay',
-        thirdPartyHint: 'The relay does not change the binding and does not record Sub2API usage.',
-        thirdPartyURL: 'Relay base URL',
-        thirdPartyTimeout: 'Timeout seconds (0 = default)',
-        thirdPartyKey: 'Relay API key',
-        thirdPartyKeyConfigured: 'Configured. Leave blank to keep it',
-        thirdPartyKeyHint: 'The key is never shown again. A blank value keeps the stored key.',
       }
 
 export default strictSession

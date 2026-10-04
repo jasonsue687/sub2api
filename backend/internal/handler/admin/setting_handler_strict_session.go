@@ -9,17 +9,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-// StrictSessionBindingSettingsRequest 随整页设置一起提交。空的第三方密钥表示保留已有密钥。
+// StrictSessionBindingSettingsRequest 随整页设置一起提交。
 type StrictSessionBindingSettingsRequest struct {
-	StrictSessionBindingEnabled           bool   `json:"strict_session_binding_enabled"`
-	StrictSessionSessionHeader            string `json:"strict_session_session_header"`
-	StrictSessionSameAccountRetryLimit    int    `json:"strict_session_same_account_retry_limit"`
-	StrictSessionFallbackOrder            string `json:"strict_session_fallback_order"`
-	StrictSessionFallbackGroupID          int64  `json:"strict_session_fallback_group_id"`
-	StrictSessionThirdPartyEnabled        bool   `json:"strict_session_third_party_enabled"`
-	StrictSessionThirdPartyBaseURL        string `json:"strict_session_third_party_base_url"`
-	StrictSessionThirdPartyAPIKey         string `json:"strict_session_third_party_api_key"`
-	StrictSessionThirdPartyTimeoutSeconds int    `json:"strict_session_third_party_timeout_seconds"`
+	StrictSessionBindingEnabled        bool   `json:"strict_session_binding_enabled"`
+	StrictSessionSessionHeader         string `json:"strict_session_session_header"`
+	StrictSessionSameAccountRetryLimit int    `json:"strict_session_same_account_retry_limit"`
 }
 
 func (h *SettingHandler) prepareStrictSessionBindingSave(ctx context.Context, previous *service.SystemSettings, req UpdateSettingsRequest, sent map[string]json.RawMessage, omitted service.OmittedSettingKeys) (*config.GatewayStrictSessionBindingConfig, error) {
@@ -47,24 +41,6 @@ func appendStrictSessionBindingAudit(changed []string, before, after *service.Sy
 	if before.StrictSessionSameAccountRetryLimit != after.StrictSessionSameAccountRetryLimit {
 		changed = append(changed, "strict_session_same_account_retry_limit")
 	}
-	if before.StrictSessionFallbackOrder != after.StrictSessionFallbackOrder {
-		changed = append(changed, "strict_session_fallback_order")
-	}
-	if before.StrictSessionFallbackGroupID != after.StrictSessionFallbackGroupID {
-		changed = append(changed, "strict_session_fallback_group_id")
-	}
-	if before.StrictSessionThirdPartyEnabled != after.StrictSessionThirdPartyEnabled {
-		changed = append(changed, "strict_session_third_party_enabled")
-	}
-	if before.StrictSessionThirdPartyBaseURL != after.StrictSessionThirdPartyBaseURL {
-		changed = append(changed, "strict_session_third_party_base_url")
-	}
-	if before.StrictSessionThirdPartyAPIKey != after.StrictSessionThirdPartyAPIKey {
-		changed = append(changed, "strict_session_third_party_api_key")
-	}
-	if before.StrictSessionThirdPartyTimeoutSeconds != after.StrictSessionThirdPartyTimeoutSeconds {
-		changed = append(changed, "strict_session_third_party_timeout_seconds")
-	}
 	return changed
 }
 
@@ -73,12 +49,6 @@ func strictSessionPayloadTouched(sent map[string]json.RawMessage) bool {
 		"strict_session_binding_enabled",
 		"strict_session_session_header",
 		"strict_session_same_account_retry_limit",
-		"strict_session_fallback_order",
-		"strict_session_fallback_group_id",
-		"strict_session_third_party_enabled",
-		"strict_session_third_party_base_url",
-		"strict_session_third_party_api_key",
-		"strict_session_third_party_timeout_seconds",
 	} {
 		if _, ok := sent[name]; ok {
 			return true
@@ -101,30 +71,6 @@ func strictSessionBindingPatch(req UpdateSettingsRequest, sent map[string]json.R
 		value := req.StrictSessionSameAccountRetryLimit
 		patch.SameAccountRetryLimit = &value
 	}
-	if _, ok := sent["strict_session_fallback_order"]; ok {
-		value := req.StrictSessionFallbackOrder
-		patch.FallbackOrder = &value
-	}
-	if _, ok := sent["strict_session_fallback_group_id"]; ok {
-		value := req.StrictSessionFallbackGroupID
-		patch.FallbackGroupID = &value
-	}
-	if _, ok := sent["strict_session_third_party_enabled"]; ok {
-		value := req.StrictSessionThirdPartyEnabled
-		patch.ThirdPartyEnabled = &value
-	}
-	if _, ok := sent["strict_session_third_party_base_url"]; ok {
-		value := req.StrictSessionThirdPartyBaseURL
-		patch.ThirdPartyBaseURL = &value
-	}
-	if _, ok := sent["strict_session_third_party_api_key"]; ok {
-		value := req.StrictSessionThirdPartyAPIKey
-		patch.ThirdPartyAPIKey = &value
-	}
-	if _, ok := sent["strict_session_third_party_timeout_seconds"]; ok {
-		value := req.StrictSessionThirdPartyTimeoutSeconds
-		patch.ThirdPartyTimeoutSeconds = &value
-	}
 	return patch
 }
 
@@ -135,10 +81,4 @@ func applyStrictSessionBindingDTO(payload *dto.SystemSettings, view service.Stri
 	payload.StrictSessionBindingEnabled = view.Enabled
 	payload.StrictSessionSessionHeader = view.SessionHeader
 	payload.StrictSessionSameAccountRetryLimit = view.SameAccountRetryLimit
-	payload.StrictSessionFallbackOrder = view.FallbackOrder
-	payload.StrictSessionFallbackGroupID = view.FallbackGroupID
-	payload.StrictSessionThirdPartyEnabled = view.ThirdPartyEnabled
-	payload.StrictSessionThirdPartyBaseURL = view.ThirdPartyBaseURL
-	payload.StrictSessionThirdPartyAPIKeyConfigured = view.ThirdPartyKeyConfigured
-	payload.StrictSessionThirdPartyTimeoutSeconds = view.ThirdPartyTimeoutSeconds
 }

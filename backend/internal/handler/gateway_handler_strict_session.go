@@ -90,76 +90,22 @@ func (h *GatewayHandler) beginStrictClaudeMessages(
 	return rt, nil
 }
 
-func (h *GatewayHandler) bindStrictFallbackActivator(
-	c *gin.Context,
-	rt *strictSessionRuntime,
-	currentAPIKey **service.APIKey,
-	currentSubscription **service.UserSubscription,
-	sessionKey *string,
-	hasBoundSession *bool,
-	sessionBoundAccountID *int64,
-	fallbackUsed *bool,
-	sessionSlotAccounts map[int64]*service.Account,
-) {
-	if rt == nil {
-		return
-	}
-	rt.activateFallback = func() error {
-		return h.activateStrictFallbackGroup(c, rt, currentAPIKey, currentSubscription, sessionKey, hasBoundSession, sessionBoundAccountID, fallbackUsed, sessionSlotAccounts)
-	}
-}
-
 func (h *GatewayHandler) applyStrictBindingLimit(fs *FailoverState, rt *strictSessionRuntime) {
 	if rt.locksAccount() && rt.Plan != nil {
 		fs.EnableStrictBinding(rt.Plan.SameAccountRetryLimit)
 	}
 }
 
-func (h *GatewayHandler) strictSelectFailureHandled(
-	c *gin.Context,
-	rt *strictSessionRuntime,
-	reqLog *zap.Logger,
-	err error,
-	body []byte,
-	streamStarted bool,
-	writerSizeAtEntry int,
-	retry *bool,
-) bool {
-	action := h.handleStrictSelectFailure(c, rt, reqLog, err, body, streamStarted, writerSizeAtEntry)
-	if action == strictFlowRetryGroup {
-		if retry != nil {
-			*retry = true
-		}
-		return true
-	}
-	return action == strictFlowStop
+func (h *GatewayHandler) strictSelectFailureHandled(c *gin.Context, rt *strictSessionRuntime, reqLog *zap.Logger, err error, streamStarted bool, writerSizeAtEntry int) bool {
+	return h.handleStrictSelectFailure(c, rt, reqLog, err, streamStarted, writerSizeAtEntry) == strictFlowStop
 }
 
-func (h *GatewayHandler) strictGiveUpAccount(
-	c *gin.Context,
-	rt *strictSessionRuntime,
-	reqLog *zap.Logger,
-	account *service.Account,
-	sessionKey, reason string,
-	releaseSession bool,
-	includeFallbackGroup bool,
-	body []byte,
-	streamStarted bool,
-	writerSizeAtEntry int,
-	retry *bool,
-) bool {
-	if rt == nil || account == nil {
+func (h *GatewayHandler) strictGiveUpAccount(c *gin.Context, rt *strictSessionRuntime, reqLog *zap.Logger, account *service.Account, sessionKey, reason string, streamStarted bool, writerSizeAtEntry int) bool {
+	if !rt.locksAccount() || account == nil {
 		return false
 	}
-	if !rt.locksAccount() && (!includeFallbackGroup || !rt.InFallbackGroup) {
-		return false
-	}
-	if releaseSession {
-		h.releaseStrictBoundSession(account, sessionKey)
-	}
-	if h.dispatchStrictFallback(c, rt, reqLog, account.ID, reason, true, true, body, streamStarted, writerSizeAtEntry) == strictFlowRetryGroup && retry != nil {
-		*retry = true
-	}
+	h.releaseStrictBoundSession(account, sessionKey)
+	h.rejectStrictAccount(c, rt, reqLog, account.ID, reason, streamStarted, writerSizeAtEntry)
 	return true
 }
 
@@ -186,34 +132,15 @@ func (h *GatewayHandler) handleStrictUpstreamFailover(
 	reqLog *zap.Logger,
 	account *service.Account,
 	failoverErr *service.UpstreamFailoverError,
-	body []byte,
 	sessionKey string,
 	streamStarted bool,
 	writerSizeAtEntry int,
-	writerSizeBeforeForward int,
 	sessionSlotAccounts map[int64]*service.Account,
 ) int {
 	if rt == nil || !rt.Active || account == nil {
 		return strictFlowPassthrough
 	}
 	if strictResponseStarted(c, streamStarted, writerSizeAtEntry) {
-		h.respondStrictStreamInterrupted(c, rt, reqLog, account.ID, true)
-		return strictFlowStop
-	}
-	if c.Writer.Size() != writerSizeBeforeForward {
-		h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
-		return strictFlowStop
-	}
-	if rt.locksAccount() {
-		action := h.dispatchStrictFailover(c, fs, rt, reqLog, account, failoverErr, body, account.Platform, streamStarted, writerSizeAtEntry)
-		if action == strictFlowPassthrough {
-			h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
-			delete(sessionSlotAccounts, account.ID)
-			return strictFlowSameAccount
-		}
-		return action
-	}
-	if rt.InFallbackGroup && strictResponseStarted(c, streamStarted, writerSizeAtEntry) {
 		h.respondStrictStreamInterrupted(c, rt, reqLog, account.ID, true)
 		return strictFlowStop
 	}
@@ -224,14 +151,13 @@ func (h *GatewayHandler) handleStrictUpstreamFailover(
 		delete(sessionSlotAccounts, account.ID)
 		return strictFlowSameAccount
 	case FailoverExhausted:
-		if rt.InFallbackGroup {
-			if h.dispatchStrictFallback(c, rt, reqLog, account.ID, "upstream_exhausted", false, failoverErr != nil && failoverErr.ShouldRetryNextAccount(), body, streamStarted, writerSizeAtEntry) == strictFlowRetryGroup {
-				return strictFlowRetryGroup
-			}
+		// Deterministic request errors keep their original status/body. Capacity,
+		// authorization and retryable upstream failures use the routing contract.
+		if failoverErr != nil && !failoverErr.ShouldRetryNextAccount() {
+			h.handleFailoverExhausted(c, failoverErr, account.Platform, streamStarted)
 			return strictFlowStop
 		}
-		h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
-		return strictFlowStop
+		return h.rejectStrictAccount(c, rt, reqLog, account.ID, "upstream_exhausted", streamStarted, writerSizeAtEntry)
 	case FailoverCanceled:
 		failoverClientGone(c)
 		return strictFlowStop

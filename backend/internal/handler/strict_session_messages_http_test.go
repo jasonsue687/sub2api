@@ -90,7 +90,7 @@ func TestMessagesStrictBindingOnDoesNotReselect(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, second.Code, second.Body.String())
 	require.NotEqual(t, other.ID, selected)
 	require.Contains(t, second.Body.String(), `"type":"session_binding_error"`)
-	require.Contains(t, second.Body.String(), `"code":"strict_session_fallback_required"`)
+	require.Contains(t, second.Body.String(), `"code":"strict_session_account_unavailable"`)
 	require.NotContains(t, second.Body.String(), "New Conversation")
 	require.NotContains(t, second.Body.String(), strictHTTPSessionID)
 	require.Empty(t, second.Header().Get("X-Sub2API-Bound-Account-Id"))
@@ -133,7 +133,7 @@ func TestMessagesStrictBindingSurvivesAPIKeyChangesAndChecksCurrentGroup(t *test
 	denied, selected := postStrictMessagesWithAPIKey(t, h, otherGroup, otherGroup.ID, nil, sessionOnly, 3103)
 	assert.Equal(t, http.StatusServiceUnavailable, denied.Code, denied.Body.String())
 	assert.Zero(t, selected, "a globally shared session ID must not bypass current group membership")
-	assert.Contains(t, denied.Body.String(), "strict_session_fallback_required")
+	assert.Contains(t, denied.Body.String(), "strict_session_account_unavailable")
 	assert.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, groupID))
 
 	newSession := `{"session_id":"11111111-2222-3333-4444-555555555555"}`
@@ -159,51 +159,34 @@ func TestMessagesStrictBindingRejectsMissingOrInvalidSessionID(t *testing.T) {
 	}
 }
 
-func TestDispatchStrictFallbackDoesNotCallThirdPartyAfterStreamStarted(t *testing.T) {
+func TestStrictAccountRejectionAfterStreamStarted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	var hits int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"msg_third"}`))
-	}))
-	t.Cleanup(upstream.Close)
-
-	cfg := &strictMessagesTestConfig{}
-	cfg.binding.Enabled = true
-	cfg.binding.ThirdParty.Enabled = true
-	cfg.binding.ThirdParty.BaseURL = upstream.URL
-	cfg.binding.ThirdParty.APIKey = "relay-secret"
-	// cfg is unexported; construct through NewGatewayService so the third-party client is wired.
-	gw := newStrictGateway(cfg, nil, nil, nil)
-	require.True(t, gw.StrictThirdPartyEnabled())
-	h := &GatewayHandler{gatewayService: gw, cfg: &cfg.Config}
-
+	h := &GatewayHandler{}
 	t.Run("stream flag with unchanged writer size", func(t *testing.T) {
-		hits = 0
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-		h.dispatchStrictFallback(c, &strictSessionRuntime{}, nil, 7, "rate_limited", true, true, []byte(`{}`), true, c.Writer.Size())
-		require.Zero(t, hits)
+		h.rejectStrictAccount(c, &strictSessionRuntime{}, nil, 7, "rate_limited", true, c.Writer.Size())
 		require.Contains(t, rec.Body.String(), "strict_session_stream_interrupted")
 	})
 
 	t.Run("bytes written after the entry baseline", func(t *testing.T) {
-		hits = 0
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 		_, err := c.Writer.Write([]byte("data: started\n\n"))
 		require.NoError(t, err)
-		h.dispatchStrictFallback(c, &strictSessionRuntime{}, nil, 7, "rate_limited", true, true, []byte(`{}`), false, 0)
-		require.Zero(t, hits)
+		h.rejectStrictAccount(c, &strictSessionRuntime{}, nil, 7, "rate_limited", false, 0)
 		require.Contains(t, rec.Body.String(), "strict_session_stream_interrupted")
 	})
 }
 
 func newStrictGateway(cfg *strictMessagesTestConfig, repo service.AccountRepository, groups service.GroupRepository, snapshot *service.SchedulerSnapshotService, runtimeSettings ...*service.SettingService) *service.GatewayService {
-	settings := service.NewSettingService(strictHTTPSettings(cfg.binding), &cfg.Config)
+	stored := strictHTTPSettings(cfg.binding)
+	for key, value := range cfg.legacyFallback {
+		stored.values[key] = value
+	}
+	settings := service.NewSettingService(stored, &cfg.Config)
 	if len(runtimeSettings) > 0 {
 		settings = runtimeSettings[0]
 	}
@@ -231,7 +214,7 @@ func newStrictGateway(cfg *strictMessagesTestConfig, repo service.AccountReposit
 		nil,
 		settings,
 		nil,
-		nil,
+		cfg.channels,
 		nil,
 		nil,
 		nil,
@@ -502,7 +485,7 @@ func (r *strictMessagesAccountRepo) ListShadowsByParent(context.Context, int64) 
 
 var _ service.AccountRepository = (*strictMessagesAccountRepo)(nil)
 
-func TestMessagesStrictFallbackGroupDoesNotRewriteBinding(t *testing.T) {
+func TestMessagesStrictRejectsWithoutUsingLegacyFallbackTargets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	originID := int64(3101)
 	fallbackID := int64(3201)
@@ -521,11 +504,13 @@ func TestMessagesStrictFallbackGroupDoesNotRewriteBinding(t *testing.T) {
 
 	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
 	cfg.binding.Enabled = true
-	cfg.binding.FallbackOrder = config.StrictFallbackOrderGroupFirst
-	cfg.binding.FallbackGroupID = fallbackID
-	cfg.binding.ThirdParty.Enabled = true
-	cfg.binding.ThirdParty.BaseURL = upstream.URL
-	cfg.binding.ThirdParty.APIKey = "relay-secret"
+	cfg.legacyFallback = map[string]string{
+		"strict_session_fallback_order":       "group_first",
+		"strict_session_fallback_group_id":    strconv.FormatInt(fallbackID, 10),
+		"strict_session_third_party_enabled":  "true",
+		"strict_session_third_party_base_url": upstream.URL,
+		"strict_session_third_party_api_key":  "relay-secret",
+	}
 
 	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, sibling, fallbackAccount}}
 	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{
@@ -545,9 +530,11 @@ func TestMessagesStrictFallbackGroupDoesNotRewriteBinding(t *testing.T) {
 	resetAt := time.Now().Add(time.Hour)
 	bound.RateLimitResetAt = &resetAt
 	second, selected := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
-	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
-	require.Equal(t, fallbackAccount.ID, selected)
-	require.Contains(t, second.Body.String(), "New Conversation")
+	require.Equal(t, http.StatusServiceUnavailable, second.Code, second.Body.String())
+	require.Zero(t, selected)
+	require.Equal(t, strictSessionErrorAccountUnavailable, second.Header().Get(strictSessionErrorHeader))
+	require.Contains(t, second.Body.String(), `"reason":"rate_limited"`)
+	require.NotContains(t, second.Body.String(), "New Conversation")
 	require.NotContains(t, second.Body.String(), "msg_third")
 	require.Zero(t, hits)
 	require.NotEqual(t, sibling.ID, selected)
@@ -560,81 +547,12 @@ func TestMessagesStrictFallbackGroupDoesNotRewriteBinding(t *testing.T) {
 	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
 }
 
-func TestMessagesStrictFallbackOrderThirdPartyFirst(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	originID := int64(3301)
-	fallbackID := int64(3302)
-	origin := strictHTTPGroup(originID)
-	fallback := strictHTTPGroup(fallbackID)
-	bound := strictHTTPAccount(1401, originID, "bound")
-	fallbackAccount := strictHTTPAccount(1402, fallbackID, "fallback")
-	var hits int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"msg_third"}`))
-	}))
-	t.Cleanup(upstream.Close)
-
-	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
-	cfg.binding.Enabled = true
-	cfg.binding.FallbackOrder = config.StrictFallbackOrderThirdPartyFirst
-	cfg.binding.FallbackGroupID = fallbackID
-	cfg.binding.ThirdParty.Enabled = true
-	cfg.binding.ThirdParty.BaseURL = upstream.URL
-	cfg.binding.ThirdParty.APIKey = "relay-secret"
-	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, fallbackAccount}}
-	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, fallbackAccount.ID: fallbackAccount}}
-	store := service.NewMemoryStrictSessionBindingStore()
-	h, cleanup := newStrictMessagesHandlerWithGroups(t, cfg, origin, map[int64]*service.Group{
-		originID: origin, fallbackID: fallback,
-	}, cache, repo, store)
-	defer cleanup()
-
-	first, _ := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
-	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
-	resetAt := time.Now().Add(time.Hour)
-	bound.RateLimitResetAt = &resetAt
-	second, selected := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
-	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
-	require.Contains(t, second.Body.String(), "msg_third")
-	require.NotContains(t, second.Body.String(), "New Conversation")
-	require.Equal(t, 1, hits)
-	require.NotEqual(t, fallbackAccount.ID, selected)
-	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
-}
-
-func TestMessagesStrictFallbackGroupEqualToOriginIsRejected(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	originID := int64(3401)
-	origin := strictHTTPGroup(originID)
-	bound := strictHTTPAccount(1501, originID, "bound")
-	sibling := strictHTTPAccount(1502, originID, "sibling")
-	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
-	cfg.binding.Enabled = true
-	cfg.binding.FallbackGroupID = originID
-	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, sibling}}
-	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, sibling.ID: sibling}}
-	store := service.NewMemoryStrictSessionBindingStore()
-	h, cleanup := newStrictMessagesHandlerWithGroups(t, cfg, origin, map[int64]*service.Group{originID: origin}, cache, repo, store)
-	defer cleanup()
-
-	first, _ := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
-	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
-	resetAt := time.Now().Add(time.Hour)
-	bound.RateLimitResetAt = &resetAt
-	second, selected := postStrictMessages(t, h, origin, originID, nil, strictHTTPMetadata())
-	require.Equal(t, http.StatusServiceUnavailable, second.Code, second.Body.String())
-	require.Contains(t, second.Body.String(), "strict_session_fallback_required")
-	require.NotContains(t, second.Body.String(), "New Conversation")
-	require.NotEqual(t, sibling.ID, selected)
-	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
-}
-
 // Test inputs keep process settings separate from the database policy.
 type strictMessagesTestConfig struct {
 	config.Config
-	binding config.GatewayStrictSessionBindingConfig
+	binding        config.GatewayStrictSessionBindingConfig
+	legacyFallback map[string]string
+	channels       *service.ChannelService
 }
 
 type strictHTTPSettingsRepo struct {
@@ -655,15 +573,9 @@ func (r *strictHTTPSettingsRepo) GetValue(_ context.Context, key string) (string
 }
 func strictHTTPSettings(cfg config.GatewayStrictSessionBindingConfig) *strictHTTPSettingsRepo {
 	return &strictHTTPSettingsRepo{values: map[string]string{
-		service.SettingKeyStrictSessionBindingEnabled:           strconv.FormatBool(cfg.Enabled),
-		service.SettingKeyStrictSessionSessionHeader:            cfg.SessionHeaderOrDefault(),
-		service.SettingKeyStrictSessionSameAccountRetryLimit:    strconv.Itoa(cfg.SameAccountRetryLimit),
-		service.SettingKeyStrictSessionFallbackOrder:            cfg.FallbackOrder,
-		service.SettingKeyStrictSessionFallbackGroupID:          strconv.FormatInt(cfg.FallbackGroupID, 10),
-		service.SettingKeyStrictSessionThirdPartyEnabled:        strconv.FormatBool(cfg.ThirdParty.Enabled),
-		service.SettingKeyStrictSessionThirdPartyBaseURL:        cfg.ThirdParty.BaseURL,
-		service.SettingKeyStrictSessionThirdPartyAPIKey:         cfg.ThirdParty.APIKey,
-		service.SettingKeyStrictSessionThirdPartyTimeoutSeconds: strconv.Itoa(cfg.ThirdParty.TimeoutSeconds),
+		service.SettingKeyStrictSessionBindingEnabled:        strconv.FormatBool(cfg.Enabled),
+		service.SettingKeyStrictSessionSessionHeader:         cfg.SessionHeaderOrDefault(),
+		service.SettingKeyStrictSessionSameAccountRetryLimit: strconv.Itoa(cfg.SameAccountRetryLimit),
 	}}
 }
 
@@ -695,4 +607,48 @@ func TestMessagesStrictConfigurationUnavailableReturns503BeforeStreaming(t *test
 	plan, err := h.prepareStrictClaudeMessages(c, nil, service.PlatformGemini, "")
 	require.NoError(t, err)
 	require.False(t, plan.Active, "Gemini must not depend on the Claude binding configuration")
+}
+
+type strictHTTPChannelRepo struct {
+	service.ChannelRepository
+	channel service.Channel
+}
+
+func (r strictHTTPChannelRepo) ListAll(context.Context) ([]service.Channel, error) {
+	return []service.Channel{r.channel}, nil
+}
+func (r strictHTTPChannelRepo) GetGroupPlatforms(context.Context, []int64) (map[int64]string, error) {
+	return map[int64]string{r.channel.GroupIDs[0]: service.PlatformAnthropic}, nil
+}
+
+func TestMessagesStrictChannelRestrictionReturnsExplicitError(t *testing.T) {
+	gid := int64(3501)
+	group := strictHTTPGroup(gid)
+	bound := strictHTTPAccount(1601, gid, "bound")
+	other := strictHTTPAccount(1602, gid, "other")
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}, binding: config.DefaultStrictSessionBindingConfig()}
+	cfg.channels = service.NewChannelService(strictHTTPChannelRepo{channel: service.Channel{
+		ID: 1, Status: service.StatusActive, GroupIDs: []int64{gid}, RestrictModels: true,
+		BillingModelSource: service.BillingModelSourceRequested,
+		ModelPricing:       []service.ChannelModelPricing{{Platform: service.PlatformAnthropic, Models: []string{"claude-opus-4"}}},
+	}}, nil, nil, nil, nil)
+	store := service.NewMemoryStrictSessionBindingStore()
+	plan, err := service.ResolveStrictSessionPlan(cfg.binding, service.StrictSessionIdentityInput{GroupID: &gid, MetadataUserID: strictHTTPMetadata()})
+	require.NoError(t, err)
+	_, err = store.Create(context.Background(), &service.StrictSessionBinding{BindingKey: plan.BindingKey, AccountID: bound.ID})
+	require.NoError(t, err)
+	h, cleanup := newStrictMessagesHandler(t, cfg, group, []*service.Account{other}, &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, other.ID: other}}, store)
+	t.Cleanup(cleanup)
+	rec, selected := postStrictMessages(t, h, group, gid, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Equal(t, strictSessionErrorAccountUnavailable, rec.Header().Get(strictSessionErrorHeader))
+	var payload struct {
+		Error struct{ Type, Code, Reason string }
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Equal(t, strictSessionErrorType, payload.Error.Type)
+	require.Equal(t, strictSessionErrorAccountUnavailable, payload.Error.Code)
+	require.Equal(t, "channel_model_restricted", payload.Error.Reason)
+	require.Zero(t, selected)
+	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, gid))
 }

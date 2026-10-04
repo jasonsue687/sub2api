@@ -1,25 +1,11 @@
 const strictSession = {
         title: '严格会话绑定',
-        description: '仅按客户端会话 ID 永久绑定订阅账号。同一会话更换 API Key 后仍使用原绑定，无需终端用户信息。原账号不能承接时，按顺序尝试兜底分组和第三方中转，不会回到原分组的订阅账号池。保存后立即生效，不需要重启。',
+        description: '仅按客户端会话 ID 永久绑定订阅账号。同一会话更换 API Key 后仍使用原绑定。原账号不可用时直接返回错误，由上层决定如何切换分组。保存后生效，无需重启。',
         enabled: '启用严格会话绑定',
         enabledHint: '默认开启。关闭后恢复普通调度，已有会话可能切换账号；绑定记录保留，重新开启后继续使用。',
-        fallbackOrder: '回退顺序',
-        fallbackOrderHint: '先尝试的目标失败且响应还没写出时，才会尝试下一个。流已经开始后不会拼接。',
-        orderGroupFirst: '先兜底分组，再第三方',
-        orderThirdPartyFirst: '先第三方，再兜底分组',
-        fallbackGroup: '兜底分组',
-        fallbackGroupNone: '不使用兜底分组',
-        fallbackGroupHint: '只能选择启用中的 Anthropic 或 Antigravity 分组。请求自己的分组与它相同时，该请求会跳过这个目标。兜底分组内的粘性只在分组内生效，不改主绑定。',
         retryLimit: '同账号重试上限',
         retryLimitHint: '-1 沿用账号自己的重试次数，0 禁用同账号重试，大于 0 为固定上限。',
         sessionHeader: '附加会话头',
-        thirdPartyEnabled: '启用第三方中转',
-        thirdPartyHint: '独立中转不改绑定，也不计入 Sub2API 用量。',
-        thirdPartyURL: '中转地址',
-        thirdPartyTimeout: '超时（秒，0 为默认）',
-        thirdPartyKey: '中转密钥',
-        thirdPartyKeyConfigured: '已配置，留空则不修改',
-        thirdPartyKeyHint: '密钥不会回显。留空表示保留当前密钥。',
       }
 
 export default strictSession
