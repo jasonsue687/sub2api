@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,7 +52,7 @@ func TestStrictModeRejectsMissingStableSessionID(t *testing.T) {
 	require.ErrorIs(t, err, ErrStrictSessionIDRequired)
 }
 
-func TestStrictIdentityIsolation(t *testing.T) {
+func TestStrictIdentityUsesOnlySessionID(t *testing.T) {
 	cfg := strictTestConfig(true)
 	base := StrictSessionIdentityInput{APIKeyID: 10, MetadataUserID: strictMetadata(strictTestSessionID)}
 	first, err := ResolveStrictSessionPlan(cfg, base)
@@ -69,7 +70,7 @@ func TestStrictIdentityIsolation(t *testing.T) {
 		MetadataUserID: strictMetadata(strictTestSessionID),
 	})
 	require.NoError(t, err)
-	require.NotEqual(t, first.BindingKey, otherTenant.BindingKey)
+	assert.Equal(t, first.BindingKey, otherTenant.BindingKey, "changing API keys must preserve the session binding")
 
 	groupA := int64(1)
 	groupB := int64(2)
@@ -87,25 +88,40 @@ func TestStrictIdentityIsolation(t *testing.T) {
 	require.NotEqual(t, first.SessionID, first.SessionFingerprint)
 }
 
-func TestStrictEndUserHeaderSplitsSharedAPIKey(t *testing.T) {
-	cfg := strictTestConfig(true)
-	cfg.Gateway.StrictSessionBinding.EndUserHeader = "X-End-User-Id"
-	_, err := ResolveStrictSessionPlan(cfg, StrictSessionIdentityInput{
-		APIKeyID: 1, SessionHeaderValue: "shared-session",
-	})
-	require.ErrorIs(t, err, ErrStrictEndUserRequired)
-
-	alice, err := ResolveStrictSessionPlan(cfg, StrictSessionIdentityInput{
-		APIKeyID: 1, SessionHeaderValue: "shared-session", EndUserHeaderValue: "alice",
-	})
-	require.NoError(t, err)
-	bob, err := ResolveStrictSessionPlan(cfg, StrictSessionIdentityInput{
-		APIKeyID: 1, SessionHeaderValue: "shared-session", EndUserHeaderValue: "bob",
-	})
-	require.NoError(t, err)
-	require.NotEqual(t, alice.BindingKey, bob.BindingKey)
-	require.NotContains(t, alice.BindingKey, "alice")
-	require.NotContains(t, alice.EndUserFingerprint, "alice")
+func TestStrictSessionIDExtraction(t *testing.T) {
+	legacy := "user_" + strings.Repeat("a", 64) + "_account__session_" + strictTestSessionID
+	for _, tc := range []struct {
+		name  string
+		input StrictSessionIdentityInput
+		want  string
+	}{
+		{"metadata without device or account", StrictSessionIdentityInput{MetadataUserID: `{"session_id":"` + strictTestSessionID + `"}`}, strictTestSessionID},
+		{"metadata ignores unrelated identity fields", StrictSessionIdentityInput{MetadataUserID: `{"device_id":null,"account_uuid":123,"session_id":"` + strictTestSessionID + `"}`}, strictTestSessionID},
+		{"legacy metadata", StrictSessionIdentityInput{MetadataUserID: legacy}, strictTestSessionID},
+		{"metadata wins over headers", StrictSessionIdentityInput{MetadataUserID: strictMetadata(strictTestSessionID), ClaudeCodeSessionID: "header", SessionHeaderValue: "extra"}, strictTestSessionID},
+		{"Claude header wins over extra", StrictSessionIdentityInput{ClaudeCodeSessionID: strictTestSessionID, SessionHeaderValue: "extra"}, strictTestSessionID},
+		{"malformed metadata falls back to header", StrictSessionIdentityInput{MetadataUserID: `{"session_id":`, ClaudeCodeSessionID: strictTestSessionID}, strictTestSessionID},
+		{"extra header", StrictSessionIdentityInput{SessionHeaderValue: "  " + strictTestSessionID + "  "}, strictTestSessionID},
+		{"missing", StrictSessionIdentityInput{}, ""},
+		{"metadata without session", StrictSessionIdentityInput{MetadataUserID: `{"device_id":"device"}`}, ""},
+		{"session must be a string", StrictSessionIdentityInput{MetadataUserID: `{"session_id":123}`}, ""},
+		{"invalid session", StrictSessionIdentityInput{MetadataUserID: `{"session_id":"line\nbreak"}`}, ""},
+		{"oversized header is not truncated", StrictSessionIdentityInput{SessionHeaderValue: strings.Repeat("s", 256)}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := ResolveStrictSessionPlan(strictTestConfig(true), tc.input)
+			if tc.want == "" {
+				require.ErrorIs(t, err, ErrStrictSessionIDRequired)
+				assert.Nil(t, plan)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, plan.SessionID)
+			fromHeader, err := ResolveStrictSessionPlan(strictTestConfig(true), StrictSessionIdentityInput{SessionHeaderValue: tc.want})
+			require.NoError(t, err)
+			assert.Equal(t, fromHeader.BindingKey, plan.BindingKey, "identity must not depend on how the session ID was transported")
+		})
+	}
 }
 
 func TestBindingSurvivesAgeAndDoesNotRewrite(t *testing.T) {
@@ -194,7 +210,14 @@ func TestConcurrentFirstAssignmentProducesOneBinding(t *testing.T) {
 	var seq atomic.Int64
 	var releases atomic.Int64
 	var officialCalls atomic.Int64
-	plan := &StrictSessionPlan{Active: true, BindingKey: "race", SessionFingerprint: "fp", Protocol: StrictSessionProtocol, APIKeyID: 1}
+	plans := make([]*StrictSessionPlan, n)
+	for i := range plans {
+		var err error
+		plans[i], err = ResolveStrictSessionPlan(strictTestConfig(true), StrictSessionIdentityInput{
+			APIKeyID: int64(i + 1), SessionHeaderValue: strictTestSessionID,
+		})
+		require.NoError(t, err)
+	}
 	selector := StrictSessionSelector{
 		Store: store,
 		OfficialSelect: func(context.Context) (*AccountSelectionResult, error) {
@@ -218,7 +241,7 @@ func TestConcurrentFirstAssignmentProducesOneBinding(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			selected, err := selector.Select(ctx, plan, nil)
+			selected, err := selector.Select(ctx, plans[i], nil)
 			errs[i] = err
 			if err == nil && selected != nil && selected.Account != nil {
 				results[i] = selected.Account.ID
@@ -239,7 +262,7 @@ func TestConcurrentFirstAssignmentProducesOneBinding(t *testing.T) {
 		require.NoError(t, selectErr, "request %d", i)
 	}
 
-	winner, err := store.inner.Get(ctx, "race")
+	winner, err := store.inner.Get(ctx, plans[0].BindingKey)
 	require.NoError(t, err)
 	for _, id := range results {
 		require.Equal(t, winner.AccountID, id)
@@ -604,7 +627,10 @@ func TestThirdPartyPassthrough4xxRejectsRedirectAndFlushes(t *testing.T) {
 		default:
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
-			flusher := w.(http.Flusher)
+			flusher, ok := w.(http.Flusher)
+			if !assert.True(t, ok, "test server must support streaming") {
+				return
+			}
 			_, _ = w.Write([]byte("data: one\n\n"))
 			flusher.Flush()
 			_, _ = w.Write([]byte("data: two\n\n"))
@@ -649,7 +675,10 @@ func TestThirdPartyHeaderTimeoutDoesNotCutActiveStream(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		flusher := w.(http.Flusher)
+		flusher, ok := w.(http.Flusher)
+		if !assert.True(t, ok, "test server must support streaming") {
+			return
+		}
 		for i := 0; i < 4; i++ {
 			_, _ = w.Write([]byte("data: chunk\n\n"))
 			flusher.Flush()
@@ -672,13 +701,6 @@ func TestThirdPartyHeaderTimeoutDoesNotCutActiveStream(t *testing.T) {
 	err = svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{"stream":true}`), recorder)
 	require.NoError(t, err)
 	require.Equal(t, 4, bytes.Count(recorder.Body.Bytes(), []byte("data: chunk")))
-}
-
-func TestEndUserHeaderRequiresExplicitTrust(t *testing.T) {
-	cfg := config.GatewayStrictSessionBindingConfig{Enabled: true, EndUserHeader: "X-End-User"}
-	require.Error(t, cfg.NormalizeAndValidate())
-	cfg.EndUserHeaderTrusted = true
-	require.NoError(t, cfg.NormalizeAndValidate())
 }
 
 func TestStrictBoundWaitStaysOnSameAccount(t *testing.T) {

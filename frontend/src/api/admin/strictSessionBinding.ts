@@ -2,8 +2,6 @@
 export interface StrictSessionBindingAdminSettings {
   strict_session_binding_source: "database" | "config" | string;
   strict_session_binding_enabled: boolean;
-  strict_session_end_user_header: string;
-  strict_session_end_user_header_trusted: boolean;
   strict_session_session_header: string;
   strict_session_same_account_retry_limit: number;
   strict_session_fallback_order: "group_first" | "third_party_first" | string;
@@ -17,8 +15,6 @@ export interface StrictSessionBindingAdminSettings {
 /** Fields written by the settings page. An empty API key keeps the stored secret. */
 export interface StrictSessionBindingUpdate {
   strict_session_binding_enabled?: boolean;
-  strict_session_end_user_header?: string;
-  strict_session_end_user_header_trusted?: boolean;
   strict_session_session_header?: string;
   strict_session_same_account_retry_limit?: number;
   strict_session_fallback_order?: string;

@@ -4,8 +4,6 @@ package dto
 type StrictSessionBindingSettings struct {
 	StrictSessionBindingSource              string `json:"strict_session_binding_source"`
 	StrictSessionBindingEnabled             bool   `json:"strict_session_binding_enabled"`
-	StrictSessionEndUserHeader              string `json:"strict_session_end_user_header"`
-	StrictSessionEndUserHeaderTrusted       bool   `json:"strict_session_end_user_header_trusted"`
 	StrictSessionSessionHeader              string `json:"strict_session_session_header"`
 	StrictSessionSameAccountRetryLimit      int    `json:"strict_session_same_account_retry_limit"`
 	StrictSessionFallbackOrder              string `json:"strict_session_fallback_order"`

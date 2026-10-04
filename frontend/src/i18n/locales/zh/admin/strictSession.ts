@@ -1,6 +1,6 @@
 const strictSession = {
         title: '严格会话绑定',
-        description: 'Claude Messages 会话第一次分到订阅账号后永久绑定。原账号不能承接时，按顺序尝试兜底分组和第三方中转，不会回到原分组的订阅账号池。保存后立即生效，不需要重启。',
+        description: '仅按客户端会话 ID 永久绑定订阅账号。同一会话更换 API Key 后仍使用原绑定，无需终端用户信息。原账号不能承接时，按顺序尝试兜底分组和第三方中转，不会回到原分组的订阅账号池。保存后立即生效，不需要重启。',
         enabled: '启用严格会话绑定',
         enabledHint: '关闭时调度保持官方行为。已有绑定不会被删除。',
         sourceDatabase: '当前生效来源：管理页保存的配置。之后修改 yaml 或环境变量不会覆盖，除非再次在此保存。',
@@ -15,9 +15,6 @@ const strictSession = {
         retryLimit: '同账号重试上限',
         retryLimitHint: '-1 沿用账号自己的重试次数，0 禁用同账号重试，大于 0 为固定上限。',
         sessionHeader: '附加会话头',
-        endUserHeader: '终端用户头',
-        endUserHeaderHint: '留空表示租户就是 API Key。填写后边缘必须覆盖或剥离该头，客户端不能自己指定。',
-        endUserTrusted: '已确认边缘会覆盖终端用户头',
         thirdPartyEnabled: '启用第三方中转',
         thirdPartyHint: '独立中转不改绑定，也不计入 Sub2API 用量。',
         thirdPartyURL: '中转地址',

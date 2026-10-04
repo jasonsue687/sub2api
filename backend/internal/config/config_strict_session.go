@@ -13,12 +13,6 @@ import (
 type GatewayStrictSessionBindingConfig struct {
 	// Enabled 默认 false。关闭时不读取、不写入绑定，调度保持官方行为。
 	Enabled bool `mapstructure:"enabled"`
-	// EndUserHeader 是外层网关在共用一把 Sub2API Key 时传入的终端用户标识。
-	// 为空则租户边界就是 API Key。非空时该头必须出现，否则严格模式拒绝请求。
-	EndUserHeader string `mapstructure:"end_user_header"`
-	// EndUserHeaderTrusted 必须在配置了 EndUserHeader 时显式设为 true。
-	// 这表示运维确认边缘会覆盖或剥离该头，客户端不能自己指定终端用户。
-	EndUserHeaderTrusted bool `mapstructure:"end_user_header_trusted"`
 	// SessionHeader 是 metadata.user_id / X-Claude-Code-Session-Id 之外的稳定会话头。
 	// 默认 X-Session-Id。内容摘要永远不会被当作永久会话 ID。
 	SessionHeader string `mapstructure:"session_header"`
@@ -67,7 +61,6 @@ func (c *GatewayStrictSessionBindingConfig) NormalizeAndValidate() error {
 	if c == nil {
 		return nil
 	}
-	c.EndUserHeader = strings.TrimSpace(c.EndUserHeader)
 	c.SessionHeader = strings.TrimSpace(c.SessionHeader)
 	c.FallbackOrder = strings.TrimSpace(c.FallbackOrder)
 	c.ThirdParty.BaseURL = strings.TrimSpace(c.ThirdParty.BaseURL)
@@ -88,12 +81,6 @@ func (c *GatewayStrictSessionBindingConfig) NormalizeAndValidate() error {
 	}
 	if c.FallbackGroupID < 0 {
 		return fmt.Errorf("fallback_group_id must be >= 0")
-	}
-	if err := validateOptionalHTTPHeaderName(c.EndUserHeader); err != nil {
-		return fmt.Errorf("end_user_header: %w", err)
-	}
-	if c.EndUserHeader != "" && !c.EndUserHeaderTrusted {
-		return fmt.Errorf("end_user_header_trusted must be true when end_user_header is set; the edge must overwrite or strip that header")
 	}
 	if c.SessionHeader != "" {
 		if err := validateOptionalHTTPHeaderName(c.SessionHeader); err != nil {
@@ -134,8 +121,6 @@ func validateOptionalHTTPHeaderName(name string) error {
 
 func setStrictSessionBindingDefaults() {
 	viper.SetDefault("gateway.strict_session_binding.enabled", false)
-	viper.SetDefault("gateway.strict_session_binding.end_user_header", "")
-	viper.SetDefault("gateway.strict_session_binding.end_user_header_trusted", false)
 	viper.SetDefault("gateway.strict_session_binding.session_header", "X-Session-Id")
 	viper.SetDefault("gateway.strict_session_binding.same_account_retry_limit", -1)
 	viper.SetDefault("gateway.strict_session_binding.fallback_order", StrictFallbackOrderGroupFirst)

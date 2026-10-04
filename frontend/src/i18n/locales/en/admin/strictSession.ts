@@ -1,6 +1,6 @@
 const strictSession = {
         title: 'Strict session binding',
-        description: 'The first Claude Messages assignment to a subscription account stays bound. When that account cannot serve, try the fallback group and the third-party relay in the selected order. Requests never return to the origin group pool. Saving applies immediately, without a restart.',
+        description: 'Bind subscription accounts by client session ID alone. The same session keeps its binding across API key changes; no end-user identity is required. When that account cannot serve, try the fallback group and the third-party relay in the selected order. Requests never return to the origin group pool. Saving applies immediately, without a restart.',
         enabled: 'Enable strict session binding',
         enabledHint: 'When off, scheduling stays on the official path. Existing bindings are kept.',
         sourceDatabase: 'Active source: the settings saved on this page. Later yaml or environment changes do not override them until you save here again.',
@@ -15,9 +15,6 @@ const strictSession = {
         retryLimit: 'Same-account retry limit',
         retryLimitHint: '-1 uses the account retry count, 0 disables same-account retries, and a positive number is a fixed cap.',
         sessionHeader: 'Extra session header',
-        endUserHeader: 'End-user header',
-        endUserHeaderHint: 'Leave empty to treat the API key as the tenant. If set, the edge must overwrite or strip the header.',
-        endUserTrusted: 'Edge overwrites the end-user header',
         thirdPartyEnabled: 'Enable third-party relay',
         thirdPartyHint: 'The relay does not change the binding and does not record Sub2API usage.',
         thirdPartyURL: 'Relay base URL',

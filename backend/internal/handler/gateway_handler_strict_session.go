@@ -151,7 +151,7 @@ func (h *GatewayHandler) strictGiveUpAccount(
 	if rt == nil || account == nil {
 		return false
 	}
-	if !rt.locksAccount() && !(includeFallbackGroup && rt.InFallbackGroup) {
+	if !rt.locksAccount() && (!includeFallbackGroup || !rt.InFallbackGroup) {
 		return false
 	}
 	if releaseSession {

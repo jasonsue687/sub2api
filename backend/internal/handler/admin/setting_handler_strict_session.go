@@ -12,8 +12,6 @@ import (
 // StrictSessionBindingSettingsRequest 随整页设置一起提交。空的第三方密钥表示保留已有密钥。
 type StrictSessionBindingSettingsRequest struct {
 	StrictSessionBindingEnabled           bool   `json:"strict_session_binding_enabled"`
-	StrictSessionEndUserHeader            string `json:"strict_session_end_user_header"`
-	StrictSessionEndUserHeaderTrusted     bool   `json:"strict_session_end_user_header_trusted"`
 	StrictSessionSessionHeader            string `json:"strict_session_session_header"`
 	StrictSessionSameAccountRetryLimit    int    `json:"strict_session_same_account_retry_limit"`
 	StrictSessionFallbackOrder            string `json:"strict_session_fallback_order"`
@@ -42,12 +40,6 @@ func appendStrictSessionBindingAudit(changed []string, before, after *service.Sy
 	}
 	if before.StrictSessionBindingEnabled != after.StrictSessionBindingEnabled {
 		changed = append(changed, "strict_session_binding_enabled")
-	}
-	if before.StrictSessionEndUserHeader != after.StrictSessionEndUserHeader {
-		changed = append(changed, "strict_session_end_user_header")
-	}
-	if before.StrictSessionEndUserHeaderTrusted != after.StrictSessionEndUserHeaderTrusted {
-		changed = append(changed, "strict_session_end_user_header_trusted")
 	}
 	if before.StrictSessionSessionHeader != after.StrictSessionSessionHeader {
 		changed = append(changed, "strict_session_session_header")
@@ -79,8 +71,6 @@ func appendStrictSessionBindingAudit(changed []string, before, after *service.Sy
 func strictSessionPayloadTouched(sent map[string]json.RawMessage) bool {
 	for _, name := range []string{
 		"strict_session_binding_enabled",
-		"strict_session_end_user_header",
-		"strict_session_end_user_header_trusted",
 		"strict_session_session_header",
 		"strict_session_same_account_retry_limit",
 		"strict_session_fallback_order",
@@ -102,14 +92,6 @@ func strictSessionBindingPatch(req UpdateSettingsRequest, sent map[string]json.R
 	if _, ok := sent["strict_session_binding_enabled"]; ok {
 		enabled := req.StrictSessionBindingEnabled
 		patch.Enabled = &enabled
-	}
-	if _, ok := sent["strict_session_end_user_header"]; ok {
-		value := req.StrictSessionEndUserHeader
-		patch.EndUserHeader = &value
-	}
-	if _, ok := sent["strict_session_end_user_header_trusted"]; ok {
-		value := req.StrictSessionEndUserHeaderTrusted
-		patch.EndUserHeaderTrusted = &value
 	}
 	if _, ok := sent["strict_session_session_header"]; ok {
 		value := req.StrictSessionSessionHeader
@@ -152,8 +134,6 @@ func applyStrictSessionBindingDTO(payload *dto.SystemSettings, view service.Stri
 	}
 	payload.StrictSessionBindingSource = view.Source
 	payload.StrictSessionBindingEnabled = view.Enabled
-	payload.StrictSessionEndUserHeader = view.EndUserHeader
-	payload.StrictSessionEndUserHeaderTrusted = view.EndUserHeaderTrusted
 	payload.StrictSessionSessionHeader = view.SessionHeader
 	payload.StrictSessionSameAccountRetryLimit = view.SameAccountRetryLimit
 	payload.StrictSessionFallbackOrder = view.FallbackOrder

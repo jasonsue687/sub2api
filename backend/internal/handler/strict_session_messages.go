@@ -22,7 +22,6 @@ const (
 const (
 	strictSessionErrorType              = "session_binding_error"
 	strictSessionErrorIDRequired        = "strict_session_id_required"
-	strictSessionErrorEndUserRequired   = "strict_session_end_user_required"
 	strictSessionErrorStoreUnavailable  = "strict_session_store_unavailable"
 	strictSessionErrorFallbackRequired  = "strict_session_fallback_required"
 	strictSessionErrorThirdPartyFailed  = "strict_session_third_party_failed"
@@ -90,7 +89,6 @@ func (h *GatewayHandler) prepareStrictClaudeMessages(c *gin.Context, apiKey *ser
 		MetadataUserID:      metadataUserID,
 		ClaudeCodeSessionID: service.ClaudeCodeSessionIDFromHeader(c),
 		SessionHeaderValue:  c.GetHeader(bindingCfg.SessionHeaderOrDefault()),
-		EndUserHeaderValue:  c.GetHeader(bindingCfg.EndUserHeader),
 	}
 	plan, err := h.gatewayService.PrepareStrictSession(c.Request.Context(), input)
 	if err != nil {
@@ -138,8 +136,6 @@ func (h *GatewayHandler) writeStrictSessionSetupError(c *gin.Context, reqLog *za
 	switch {
 	case errors.Is(err, service.ErrStrictSessionIDRequired):
 		h.respondStrictSessionError(c, http.StatusBadRequest, strictSessionErrorIDRequired, "stable_session_id_required", streamStarted)
-	case errors.Is(err, service.ErrStrictEndUserRequired):
-		h.respondStrictSessionError(c, http.StatusBadRequest, strictSessionErrorEndUserRequired, "end_user_required", streamStarted)
 	default:
 		if reqLog != nil {
 			reqLog.Warn("strict_session.store_failed", zap.Error(err))

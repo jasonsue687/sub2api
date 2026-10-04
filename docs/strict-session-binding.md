@@ -34,7 +34,6 @@
 | code | 含义 |
 | --- | --- |
 | `strict_session_id_required` | 严格模式缺少稳定会话 ID |
-| `strict_session_end_user_required` | 配置了终端用户头但请求没带 |
 | `strict_session_store_unavailable` | 绑定存储读写失败，没有重新选号 |
 | `strict_session_fallback_required` | 两个回退目标都没配置，或都失败，且最后没有写出第三方响应 |
 | `strict_session_third_party_failed` | 第三方失败，且没有剩余的兜底分组可以再试 |
@@ -52,16 +51,21 @@
 
 带 `cache_control` 的内容哈希、消息摘要都不会成为永久会话 ID。没有上述 ID 时，严格模式直接拒绝。
 
-绑定键是 SHA-256，包含：
+绑定键为 `SHA-256("v2|session=" + session_id)`。固定版本前缀之外只包含客户端原始会话 ID；API Key、用户、设备、协议、分组和模型都不参与身份计算。
 
-- API Key ID（可信租户）
-- 入站协议，固定为 `anthropic`。混合调度选中 Antigravity 账号也不会把同一会话拆成新绑定。
-- 可选终端用户。只有配置了 `end_user_header` 才纳入，并且该头必填。同时必须把 `end_user_header_trusted` 设为 `true`。这表示边缘网关会覆盖或剥离该头，客户端不能自己指定终端用户。功能开启后，只配头、不显式声明信任，配置校验会失败。空头表示租户边界就是 API Key。
-- 稳定会话 ID
+同一个会话 ID 在全系统命中同一条绑定，即使更换 API Key、设备或请求入口。不同会话 ID 独立分配账号。系统不识别会话属于哪个人，不需要终端用户请求头；客户端主动复用相同 ID，也会被视为同一会话。
 
-不会把分组 ID 或模型放进绑定键。换模型、换分组路由都不能绕过原绑定；原账号不在当前分组或不支持该模型时走回退目标，而不是另选原分组的订阅账号。不同 API Key 即使提交相同会话 ID 也不会串绑。共用一把 Key 的多个终端用户必须配置 `end_user_header`。
+JSON 格式的 `metadata.user_id` 只需提供非空字符串 `session_id`，不要求 `device_id` 或 `account_uuid`。旧版 `user_<device>_account_<account>_session_<id>` 格式仍支持。此处只改变严格绑定的会话提取，不放宽上游设备指纹解析规则。各来源均拒绝控制字符、非法 UTF-8 和超过 255 字符的 ID；缺失时不生成随机 ID，也不用内容哈希代替。
 
-数据库只保存绑定键、短指纹、账号 ID、协议、API Key ID、首次分组和终端用户短指纹。不保存正文、Token、Cookie 或完整会话 ID。
+API Key 仍按现有流程鉴权、计费；绑定账号每次按当前请求的分组、模型和账号状态检查。标准模式下，另一把 Key 无权使用原账号所在分组时走已配置的回退目标，不凭会话 ID 越过分组限制，也不改写主绑定。simple 模式继续遵循官方忽略分组的规则。
+
+数据库保存绑定键、短指纹、账号 ID、首次请求的协议、API Key ID 和分组；后三者只作审计信息。不再读取或写入终端用户指纹，不保存正文、Token、Cookie 或完整会话 ID。
+
+### 旧草稿绑定兼容性
+
+本次不修改已经存在的 `242_strict_session_bindings.sql`，避免破坏迁移校验。表里的 `end_user_fingerprint` 作为历史可空列保留，新代码不使用它；该迁移中描述旧绑定键的注释属于旧草稿语义，以本节为准。
+
+旧草稿使用 API Key / 终端用户参与计算的 v1 绑定键，新版只读写会话级 v2 键，两者不自动合并。由于表中没有完整会话 ID，不能从旧哈希可靠恢复新键。如果已经试运行旧草稿并积累绑定，上线前必须单独准备、核验会话映射和冲突处理方案；直接切换会使旧会话首次请求建立新的 v2 绑定。旧行不会被删除。
 
 ## 和官方粘性会话的关系
 
@@ -79,8 +83,6 @@
 gateway:
   strict_session_binding:
     enabled: false
-    end_user_header: ""
-    end_user_header_trusted: false
     session_header: "X-Session-Id"
     same_account_retry_limit: -1
     # group_first 或 third_party_first。默认先兜底分组。
@@ -100,7 +102,7 @@ gateway:
 
 位置：管理后台 → 系统设置 → 网关服务，页内第一张卡片「严格会话绑定」。
 
-可配置：启用开关、回退顺序、兜底分组（下拉只列出启用中的 Anthropic / Antigravity 分组）、同账号重试、会话头、终端用户头及信任开关、第三方地址 / 密钥 / 超时。密钥按现有敏感字段处理：接口只返回 `strict_session_third_party_api_key_configured`，不回显明文；保存时留空表示保留已有密钥。
+可配置：启用开关、回退顺序、兜底分组（下拉只列出启用中的 Anthropic / Antigravity 分组）、同账号重试、会话头、第三方地址 / 密钥 / 超时。密钥按现有敏感字段处理：接口只返回 `strict_session_third_party_api_key_configured`，不回显明文；保存时留空表示保留已有密钥。
 
 优先级：
 
@@ -140,6 +142,7 @@ gateway:
 
 ## 审查修正
 
+- 会话身份只由客户端会话 ID 决定；更换 API Key 不创建新绑定。管理页不再提供终端用户设置。
 - 流已经开始写出后，所有严格回退调用点都传入请求入口时的写出量，并且 `streamStarted` 本身也会阻止拼接第三方响应。
 - 并发首写输家读回赢家的账号，不再因为冲突返回 503。
 - `run_mode: simple` 不按分组把绑定判成永久移出。
@@ -148,7 +151,6 @@ gateway:
 - 第三方客户端拒绝重定向，流式响应按块 Flush；`timeout_seconds` 只限制响应头和读空闲，不截断仍在输出的长流。4xx 原样透传，5xx 仍返回明确错误。
 - 不再通过 `X-Sub2API-Bound-Account-Id` 返回内部账号 ID。
 - `same_account_retry_limit=0` 禁用同账号重试；默认值改为 `-1`，表示沿用账号配置。
-- 配置 `end_user_header` 时必须显式设置 `end_user_header_trusted=true`。
 
 ## 未覆盖范围
 

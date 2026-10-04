@@ -10,15 +10,15 @@ import (
 )
 
 const strictSessionBindingSelectList = `
-	id, binding_key, session_fingerprint, account_id, protocol, api_key_id, group_id, end_user_fingerprint, created_at`
+	id, binding_key, session_fingerprint, account_id, protocol, api_key_id, group_id, created_at`
 
 // createStrictSessionBindingSQL 在一条语句里完成插入或读回已有行。
 // DO UPDATE 把 account_id 设回原值：不改写赢家，但会等待冲突事务并 RETURNING 那一行。
 // DO NOTHING 加同语句 SELECT 会用插入前的快照，并发输家可能看到 0 行。
 const createStrictSessionBindingSQL = `
 INSERT INTO strict_session_bindings (
-	binding_key, session_fingerprint, account_id, protocol, api_key_id, group_id, end_user_fingerprint
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
+	binding_key, session_fingerprint, account_id, protocol, api_key_id, group_id
+) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (binding_key) DO UPDATE
 SET account_id = strict_session_bindings.account_id
 RETURNING ` + strictSessionBindingSelectList
@@ -64,10 +64,6 @@ func (r *strictSessionBindingRepository) Create(ctx context.Context, binding *se
 	if binding.GroupID != nil {
 		groupID = sql.NullInt64{Int64: *binding.GroupID, Valid: true}
 	}
-	var endUser sql.NullString
-	if binding.EndUserFingerprint != "" {
-		endUser = sql.NullString{String: binding.EndUserFingerprint, Valid: true}
-	}
 	row := r.db.QueryRowContext(ctx, createStrictSessionBindingSQL,
 		binding.BindingKey,
 		binding.SessionFingerprint,
@@ -75,7 +71,6 @@ func (r *strictSessionBindingRepository) Create(ctx context.Context, binding *se
 		binding.Protocol,
 		binding.APIKeyID,
 		groupID,
-		endUser,
 	)
 	stored, err := scanStrictSessionBinding(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -96,7 +91,6 @@ func scanStrictSessionBinding(row strictSessionBindingScanner) (*service.StrictS
 	var (
 		binding service.StrictSessionBinding
 		groupID sql.NullInt64
-		endUser sql.NullString
 	)
 	err := row.Scan(
 		&binding.ID,
@@ -106,7 +100,6 @@ func scanStrictSessionBinding(row strictSessionBindingScanner) (*service.StrictS
 		&binding.Protocol,
 		&binding.APIKeyID,
 		&groupID,
-		&endUser,
 		&binding.CreatedAt,
 	)
 	if err != nil {
@@ -114,9 +107,6 @@ func scanStrictSessionBinding(row strictSessionBindingScanner) (*service.StrictS
 	}
 	if groupID.Valid {
 		binding.GroupID = &groupID.Int64
-	}
-	if endUser.Valid {
-		binding.EndUserFingerprint = endUser.String
 	}
 	return &binding, nil
 }

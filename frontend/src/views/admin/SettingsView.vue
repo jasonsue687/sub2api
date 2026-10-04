@@ -203,7 +203,7 @@
 
         <!-- Tab: Gateway -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
-          <StrictSessionBindingSettings :form="form" :groups="strictFallbackGroups" />
+          <StrictSessionBindingSettings :form="form" :groups="strictFallbackGroups" @update:form="Object.assign(form, $event)" />
           <!-- Overload Cooldown (529) Settings -->
           <div class="card">
             <div

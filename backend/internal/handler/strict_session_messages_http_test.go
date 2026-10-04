@@ -17,6 +17,7 @@ import (
 	middleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -100,6 +101,62 @@ func TestMessagesStrictBindingOnDoesNotReselect(t *testing.T) {
 	require.Contains(t, logged, "session_fp")
 }
 
+func TestMessagesStrictBindingSurvivesAPIKeyChangesAndChecksCurrentGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(2103)
+	group := strictHTTPGroup(groupID)
+	bound := strictHTTPAccount(1301, groupID, "bound")
+	other := strictHTTPAccount(1302, groupID, "other")
+	cache := &fakeSchedulerCache{accounts: []*service.Account{bound}}
+	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, other.ID: other}}
+	store := service.NewMemoryStrictSessionBindingStore()
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	cfg.Gateway.StrictSessionBinding.Enabled = true
+	h, cleanup := newStrictMessagesHandlerWithCache(t, cfg, group, cache, repo, store)
+	t.Cleanup(cleanup)
+
+	first, selected := postStrictMessagesWithAPIKey(t, h, group, groupID, nil, strictHTTPMetadata(), 3101)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	assert.Equal(t, bound.ID, selected)
+
+	// A fresh official selection would now pick the other account. Only the
+	// session ID is carried forward: both the API key and metadata shape change.
+	cache.accounts = []*service.Account{other}
+	sessionOnly := `{"session_id":"` + strictHTTPSessionID + `"}`
+	resumed, selected := postStrictMessagesWithAPIKey(t, h, group, groupID, nil, sessionOnly, 3102)
+	require.Equal(t, http.StatusOK, resumed.Code, resumed.Body.String())
+	assert.Equal(t, bound.ID, selected)
+
+	otherGroup := strictHTTPGroup(groupID + 1)
+	denied, selected := postStrictMessagesWithAPIKey(t, h, otherGroup, otherGroup.ID, nil, sessionOnly, 3103)
+	assert.Equal(t, http.StatusServiceUnavailable, denied.Code, denied.Body.String())
+	assert.Zero(t, selected, "a globally shared session ID must not bypass current group membership")
+	assert.Contains(t, denied.Body.String(), "strict_session_fallback_required")
+	assert.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, groupID))
+
+	newSession := `{"session_id":"11111111-2222-3333-4444-555555555555"}`
+	fresh, selected := postStrictMessagesWithAPIKey(t, h, group, groupID, nil, newSession, 3102)
+	require.Equal(t, http.StatusOK, fresh.Code, fresh.Body.String())
+	assert.Equal(t, other.ID, selected)
+}
+
+func TestMessagesStrictBindingRejectsMissingOrInvalidSessionID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(2104)
+	group := strictHTTPGroup(groupID)
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.StrictSessionBinding.Enabled = true
+	h, cleanup := newStrictMessagesHandler(t, cfg, group, nil, &strictMessagesAccountRepo{}, service.NewMemoryStrictSessionBindingStore())
+	t.Cleanup(cleanup)
+	for _, metadata := range []string{"", `{"device_id":"device"}`, `{"session_id":42}`, `{"session_id":`} {
+		rec, selected := postStrictMessages(t, h, group, groupID, nil, metadata)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "strict_session_id_required", rec.Header().Get("X-Sub2API-Error-Code"))
+		assert.Contains(t, rec.Body.String(), "stable_session_id_required")
+		assert.Zero(t, selected)
+	}
+}
+
 func TestDispatchStrictFallbackDoesNotCallThirdPartyAfterStreamStarted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var hits int
@@ -115,9 +172,8 @@ func TestDispatchStrictFallbackDoesNotCallThirdPartyAfterStreamStarted(t *testin
 	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
 	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL
 	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
-	gw := &service.GatewayService{}
 	// cfg is unexported; construct through NewGatewayService so the third-party client is wired.
-	gw = newStrictGateway(cfg, nil, nil, nil)
+	gw := newStrictGateway(cfg, nil, nil, nil)
 	require.True(t, gw.StrictThirdPartyEnabled())
 	h := &GatewayHandler{gatewayService: gw, cfg: cfg}
 
@@ -192,14 +248,18 @@ func newStrictMessagesHandlerWithGroups(t *testing.T, cfg *config.Config, group 
 	if cfg == nil {
 		cfg = &config.Config{RunMode: config.RunModeSimple}
 	}
-	snapshot := service.NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
+	snapshot := service.NewSchedulerSnapshotService(cache, nil, repo, nil, nil)
 	groupRepo := &fakeGroupRepo{group: group}
 	if groups != nil {
 		groupRepo.byID = groups
 	}
 	gw := newStrictGateway(cfg, repo, groupRepo, snapshot)
 	gw.SetStrictSessionBindingStore(store)
-	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	var billingCache service.BillingCache
+	if cfg.RunMode != config.RunModeSimple {
+		billingCache = newHandlerInflightCache(100)
+	}
+	billing := service.NewBillingCacheService(billingCache, nil, nil, nil, nil, nil, cfg, nil)
 	h := &GatewayHandler{
 		gatewayService:           gw,
 		billingCacheService:      billing,
@@ -212,6 +272,11 @@ func newStrictMessagesHandlerWithGroups(t *testing.T, cfg *config.Config, group 
 }
 
 func postStrictMessages(t *testing.T, h *GatewayHandler, group *service.Group, groupID int64, zapLogger *zap.Logger, metadataUserID string) (*httptest.ResponseRecorder, int64) {
+	t.Helper()
+	return postStrictMessagesWithAPIKey(t, h, group, groupID, zapLogger, metadataUserID, 3101)
+}
+
+func postStrictMessagesWithAPIKey(t *testing.T, h *GatewayHandler, group *service.Group, groupID int64, zapLogger *zap.Logger, metadataUserID string, apiKeyID int64) (*httptest.ResponseRecorder, int64) {
 	t.Helper()
 	payload := map[string]any{
 		"model":      "claude-sonnet-4-5",
@@ -237,7 +302,7 @@ func postStrictMessages(t *testing.T, h *GatewayHandler, group *service.Group, g
 	c.Request = req.WithContext(ctx)
 
 	apiKey := &service.APIKey{
-		ID:      3101,
+		ID:      apiKeyID,
 		UserID:  4101,
 		GroupID: &groupID,
 		Status:  service.StatusActive,

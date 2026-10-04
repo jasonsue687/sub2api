@@ -15,8 +15,6 @@ const (
 	// Strict Claude Messages session binding. Override=false means yaml/env still wins.
 	SettingKeyStrictSessionBindingOverride          = "strict_session_binding_override"
 	SettingKeyStrictSessionBindingEnabled           = "strict_session_binding_enabled"
-	SettingKeyStrictSessionEndUserHeader            = "strict_session_end_user_header"
-	SettingKeyStrictSessionEndUserHeaderTrusted     = "strict_session_end_user_header_trusted"
 	SettingKeyStrictSessionSessionHeader            = "strict_session_session_header"
 	SettingKeyStrictSessionSameAccountRetryLimit    = "strict_session_same_account_retry_limit"
 	SettingKeyStrictSessionFallbackOrder            = "strict_session_fallback_order"
@@ -36,8 +34,6 @@ type strictSessionBindingState struct {
 type StrictSessionBindingSettings struct {
 	StrictSessionBindingOverride            bool
 	StrictSessionBindingEnabled             bool
-	StrictSessionEndUserHeader              string
-	StrictSessionEndUserHeaderTrusted       bool
 	StrictSessionSessionHeader              string
 	StrictSessionSameAccountRetryLimit      int
 	StrictSessionFallbackOrder              string
@@ -61,8 +57,6 @@ func strictSessionBindingDefaultSettings() map[string]string {
 	return map[string]string{
 		SettingKeyStrictSessionBindingOverride:          "false",
 		SettingKeyStrictSessionBindingEnabled:           "false",
-		SettingKeyStrictSessionEndUserHeader:            "",
-		SettingKeyStrictSessionEndUserHeaderTrusted:     "false",
 		SettingKeyStrictSessionSessionHeader:            "X-Session-Id",
 		SettingKeyStrictSessionSameAccountRetryLimit:    "-1",
 		SettingKeyStrictSessionFallbackOrder:            config.StrictFallbackOrderGroupFirst,
@@ -99,8 +93,6 @@ func applyStrictSessionBindingSettings(result *SystemSettings, settings map[stri
 	_, overridePresent := settings[SettingKeyStrictSessionBindingOverride]
 	result.StrictSessionBindingOverride = overridePresent && settings[SettingKeyStrictSessionBindingOverride] == "true"
 	result.StrictSessionBindingEnabled = settings[SettingKeyStrictSessionBindingEnabled] == "true"
-	result.StrictSessionEndUserHeader = strings.TrimSpace(settings[SettingKeyStrictSessionEndUserHeader])
-	result.StrictSessionEndUserHeaderTrusted = settings[SettingKeyStrictSessionEndUserHeaderTrusted] == "true"
 	result.StrictSessionSessionHeader = strings.TrimSpace(settings[SettingKeyStrictSessionSessionHeader])
 	if result.StrictSessionSessionHeader == "" {
 		result.StrictSessionSessionHeader = "X-Session-Id"
@@ -152,8 +144,6 @@ func (settings *SystemSettings) strictSessionBindingConfig() config.GatewayStric
 	}
 	return config.GatewayStrictSessionBindingConfig{
 		Enabled:               settings.StrictSessionBindingEnabled,
-		EndUserHeader:         settings.StrictSessionEndUserHeader,
-		EndUserHeaderTrusted:  settings.StrictSessionEndUserHeaderTrusted,
 		SessionHeader:         settings.StrictSessionSessionHeader,
 		SameAccountRetryLimit: settings.StrictSessionSameAccountRetryLimit,
 		FallbackOrder:         settings.StrictSessionFallbackOrder,
@@ -217,8 +207,6 @@ func (s *SettingService) storeStrictSessionBindingCache(settings *SystemSettings
 type StrictSessionBindingAdminView struct {
 	Source                   string
 	Enabled                  bool
-	EndUserHeader            string
-	EndUserHeaderTrusted     bool
 	SessionHeader            string
 	SameAccountRetryLimit    int
 	FallbackOrder            string
@@ -247,8 +235,6 @@ func (s *SettingService) StrictSessionBindingAdminView(stored *SystemSettings) S
 	return StrictSessionBindingAdminView{
 		Source:                   source,
 		Enabled:                  cfg.Enabled,
-		EndUserHeader:            cfg.EndUserHeader,
-		EndUserHeaderTrusted:     cfg.EndUserHeaderTrusted,
 		SessionHeader:            cfg.SessionHeader,
 		SameAccountRetryLimit:    cfg.SameAccountRetryLimit,
 		FallbackOrder:            cfg.FallbackOrder,
@@ -301,8 +287,6 @@ func strictSessionBindingUpdateMap(settings *SystemSettings) map[string]string {
 	updates := map[string]string{
 		SettingKeyStrictSessionBindingOverride:          strconv.FormatBool(settings.StrictSessionBindingOverride),
 		SettingKeyStrictSessionBindingEnabled:           strconv.FormatBool(settings.StrictSessionBindingEnabled),
-		SettingKeyStrictSessionEndUserHeader:            strings.TrimSpace(settings.StrictSessionEndUserHeader),
-		SettingKeyStrictSessionEndUserHeaderTrusted:     strconv.FormatBool(settings.StrictSessionEndUserHeaderTrusted),
 		SettingKeyStrictSessionSessionHeader:            header,
 		SettingKeyStrictSessionSameAccountRetryLimit:    strconv.Itoa(settings.StrictSessionSameAccountRetryLimit),
 		SettingKeyStrictSessionFallbackOrder:            order,
@@ -328,8 +312,6 @@ func strictSessionBindingUpdates(settings *SystemSettings) map[string]string {
 // 空的第三方密钥表示保留已有密钥，不会清空。
 type StrictSessionBindingPatch struct {
 	Enabled                  *bool
-	EndUserHeader            *string
-	EndUserHeaderTrusted     *bool
 	SessionHeader            *string
 	SameAccountRetryLimit    *int
 	FallbackOrder            *string
@@ -355,12 +337,6 @@ func (s *SettingService) ResolveStrictSessionBindingSave(ctx context.Context, pr
 	}
 	if patch.Enabled != nil {
 		cfg.Enabled = *patch.Enabled
-	}
-	if patch.EndUserHeader != nil {
-		cfg.EndUserHeader = *patch.EndUserHeader
-	}
-	if patch.EndUserHeaderTrusted != nil {
-		cfg.EndUserHeaderTrusted = *patch.EndUserHeaderTrusted
 	}
 	if patch.SessionHeader != nil {
 		cfg.SessionHeader = *patch.SessionHeader
@@ -406,8 +382,6 @@ func applyResolvedStrictSessionBinding(settings *SystemSettings, cfg config.Gate
 	}
 	settings.StrictSessionBindingOverride = true
 	settings.StrictSessionBindingEnabled = cfg.Enabled
-	settings.StrictSessionEndUserHeader = cfg.EndUserHeader
-	settings.StrictSessionEndUserHeaderTrusted = cfg.EndUserHeaderTrusted
 	settings.StrictSessionSessionHeader = cfg.SessionHeader
 	settings.StrictSessionSameAccountRetryLimit = cfg.SameAccountRetryLimit
 	settings.StrictSessionFallbackOrder = cfg.FallbackOrder
@@ -422,8 +396,6 @@ func applyResolvedStrictSessionBinding(settings *SystemSettings, cfg config.Gate
 var strictSessionSettingKeys = []string{
 	SettingKeyStrictSessionBindingOverride,
 	SettingKeyStrictSessionBindingEnabled,
-	SettingKeyStrictSessionEndUserHeader,
-	SettingKeyStrictSessionEndUserHeaderTrusted,
 	SettingKeyStrictSessionSessionHeader,
 	SettingKeyStrictSessionSameAccountRetryLimit,
 	SettingKeyStrictSessionFallbackOrder,

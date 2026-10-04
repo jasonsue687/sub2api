@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -11,8 +12,34 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStrictSessionBindingRepositoryReturnsOriginalAssignmentAcrossAPIKeys(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	createdAt := time.Now().UTC()
+	key := strings.Repeat("a", 64)
+	columns := []string{"id", "binding_key", "session_fingerprint", "account_id", "protocol", "api_key_id", "group_id", "created_at"}
+	// A second API key proposes another account for the same session. The
+	// database returns the existing account and the first request's audit data.
+	mock.ExpectQuery(regexp.QuoteMeta(createStrictSessionBindingSQL)).
+		WithArgs(key, "session-fp", int64(22), service.StrictSessionProtocol, int64(2), nil).
+		WillReturnRows(sqlmock.NewRows(columns).AddRow(1, key, "session-fp", 11, service.StrictSessionProtocol, 1, nil, createdAt))
+	repo := NewStrictSessionBindingRepository(db)
+	stored, err := repo.Create(context.Background(), &service.StrictSessionBinding{
+		BindingKey: key, SessionFingerprint: "session-fp", AccountID: 22,
+		Protocol: service.StrictSessionProtocol, APIKeyID: 2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(11), stored.AccountID)
+	assert.Equal(t, int64(1), stored.APIKeyID)
+	assert.Nil(t, stored.GroupID)
+	assert.Equal(t, createdAt, stored.CreatedAt)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
 
 func TestStrictSessionBindingRepositoryReadFailureIsNotAbsence(t *testing.T) {
 	db, mock, err := sqlmock.New()

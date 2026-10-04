@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,8 +15,7 @@ import (
 )
 
 const (
-	// StrictSessionProtocol 是 Claude Messages 入站协议维度。
-	// 绑定键使用它，而不是最终选中的账号平台，避免混合调度把同一会话拆成新绑定。
+	// StrictSessionProtocol 只记录首次请求的入站协议，不参与会话身份。
 	StrictSessionProtocol = "anthropic"
 
 	strictSessionFingerprintBytes = 6
@@ -30,8 +28,6 @@ var (
 	ErrStrictSessionStore = errors.New("strict session binding store unavailable")
 	// ErrStrictSessionIDRequired 表示严格模式缺少稳定会话 ID。
 	ErrStrictSessionIDRequired = errors.New("strict session id required")
-	// ErrStrictEndUserRequired 表示配置了终端用户头但请求没有提供。
-	ErrStrictEndUserRequired = errors.New("strict session end user required")
 )
 
 // StrictSessionBinding 是会话到原订阅账号的持久绑定。
@@ -42,9 +38,8 @@ type StrictSessionBinding struct {
 	SessionFingerprint string
 	AccountID          int64
 	Protocol           string
-	APIKeyID           int64
+	APIKeyID           int64 // 首次请求的审计信息，不参与绑定键或后续鉴权。
 	GroupID            *int64
-	EndUserFingerprint string
 	CreatedAt          time.Time
 }
 
@@ -77,7 +72,6 @@ type StrictSessionIdentityInput struct {
 	MetadataUserID      string
 	ClaudeCodeSessionID string
 	SessionHeaderValue  string
-	EndUserHeaderValue  string
 }
 
 // StrictSessionPlan 是一次 Claude Messages 请求的严格绑定计划。
@@ -86,7 +80,6 @@ type StrictSessionPlan struct {
 	Active                bool
 	BindingKey            string
 	SessionFingerprint    string
-	EndUserFingerprint    string
 	SessionID             string
 	APIKeyID              int64
 	GroupID               *int64
@@ -221,24 +214,14 @@ func ResolveStrictSessionPlan(cfg *config.Config, in StrictSessionIdentityInput)
 		return &StrictSessionPlan{}, nil
 	}
 	bindingCfg := cfg.Gateway.StrictSessionBinding
-	if strings.TrimSpace(bindingCfg.EndUserHeader) != "" && sanitizeSessionID(in.EndUserHeaderValue) == "" {
-		return nil, ErrStrictEndUserRequired
-	}
 	sessionID, err := resolveStrictSessionID(in)
 	if err != nil {
 		return nil, err
 	}
-	endUser := ""
-	endUserFingerprint := ""
-	if strings.TrimSpace(bindingCfg.EndUserHeader) != "" {
-		endUser = sanitizeSessionID(in.EndUserHeaderValue)
-		endUserFingerprint = StrictSessionFingerprint(endUser)
-	}
 	plan := &StrictSessionPlan{
 		Active:                true,
-		BindingKey:            strictBindingKey(in.APIKeyID, StrictSessionProtocol, sessionID, endUser),
+		BindingKey:            strictBindingKey(sessionID),
 		SessionFingerprint:    StrictSessionFingerprint(sessionID),
-		EndUserFingerprint:    endUserFingerprint,
 		SessionID:             sessionID,
 		APIKeyID:              in.APIKeyID,
 		GroupID:               in.GroupID,
@@ -250,10 +233,8 @@ func ResolveStrictSessionPlan(cfg *config.Config, in StrictSessionIdentityInput)
 }
 
 func resolveStrictSessionID(in StrictSessionIdentityInput) (string, error) {
-	if parsed := ParseMetadataUserID(in.MetadataUserID); parsed != nil {
-		if sessionID := sanitizeSessionID(parsed.SessionID); sessionID != "" {
-			return sessionID, nil
-		}
+	if sessionID := sanitizeSessionID(ParseMetadataSessionID(in.MetadataUserID)); sessionID != "" {
+		return sessionID, nil
 	}
 	if sessionID := sanitizeSessionID(in.ClaudeCodeSessionID); sessionID != "" {
 		return sessionID, nil
@@ -264,14 +245,10 @@ func resolveStrictSessionID(in StrictSessionIdentityInput) (string, error) {
 	return "", ErrStrictSessionIDRequired
 }
 
-func strictBindingKey(apiKeyID int64, protocol, sessionID, endUser string) string {
-	endUserHash := "-"
-	if endUser != "" {
-		sum := sha256.Sum256([]byte(endUser))
-		endUserHash = hex.EncodeToString(sum[:])
-	}
-	canonical := fmt.Sprintf("v1|protocol=%s|api_key=%d|end_user=%s|session=%s", protocol, apiKeyID, endUserHash, sessionID)
-	sum := sha256.Sum256([]byte(canonical))
+// strictBindingKey 只依赖客户端会话 ID。固定版本前缀与旧的租户键区分，
+// API Key、用户、设备、分组、模型和最终账号平台均不参与身份计算。
+func strictBindingKey(sessionID string) string {
+	sum := sha256.Sum256([]byte("v2|session=" + sessionID))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -545,7 +522,6 @@ func (s StrictSessionSelector) Select(ctx context.Context, plan *StrictSessionPl
 		Protocol:           plan.Protocol,
 		APIKeyID:           plan.APIKeyID,
 		GroupID:            groupID,
-		EndUserFingerprint: plan.EndUserFingerprint,
 	})
 	if err != nil {
 		releaseSelection(selected)

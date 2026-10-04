@@ -538,14 +538,8 @@ gateway:
   # 说明见 docs/strict-session-binding.md。
   strict_session_binding:
     enabled: false
-    # Trusted end-user header when many users share one Sub2API API key.
-    # Empty means the API key itself is the tenant boundary.
-    # When set, end_user_header_trusted must be true: the edge has to overwrite
-    # or strip the header so clients cannot choose their own tenant.
-    # 多用户共用一把 Key 时，由外层网关传入的终端用户头。为空则租户边界就是 API Key。
-    # 非空时必须同时把 end_user_header_trusted 设为 true，确认边缘会覆盖或剥离该头。
-    end_user_header: ""
-    end_user_header_trusted: false
+    # Bind by client session ID alone, across API keys. No end-user identity is needed.
+    # 仅按客户端会话 ID 绑定，换 Key 后沿用原绑定，无需终端用户信息。
     # Extra stable session header. metadata.user_id and X-Claude-Code-Session-Id are always accepted.
     # 额外的稳定会话头。metadata.user_id 与 X-Claude-Code-Session-Id 始终有效。
     session_header: "X-Session-Id"

@@ -10,8 +10,6 @@ export type StrictSessionBindingForm = StrictSessionBindingAdminSettings & {
 export const strictSessionBindingFormDefaults: StrictSessionBindingForm = {
   strict_session_binding_source: "config",
   strict_session_binding_enabled: false,
-  strict_session_end_user_header: "",
-  strict_session_end_user_header_trusted: false,
   strict_session_session_header: "X-Session-Id",
   strict_session_same_account_retry_limit: -1,
   strict_session_fallback_order: "group_first",
@@ -30,8 +28,6 @@ export function clearStrictSessionBindingSecret(form: { strict_session_third_par
 export function strictSessionBindingUpdatePayload(form: StrictSessionBindingForm): StrictSessionBindingUpdate {
   return {
     strict_session_binding_enabled: form.strict_session_binding_enabled,
-    strict_session_end_user_header: form.strict_session_end_user_header,
-    strict_session_end_user_header_trusted: form.strict_session_end_user_header_trusted,
     strict_session_session_header: form.strict_session_session_header,
     strict_session_same_account_retry_limit: form.strict_session_same_account_retry_limit,
     strict_session_fallback_order: form.strict_session_fallback_order,
