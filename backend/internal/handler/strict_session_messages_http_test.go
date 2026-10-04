@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -33,7 +35,7 @@ func TestMessagesStrictBindingOffKeepsOfficialReselection(t *testing.T) {
 	blocked := strictHTTPAccount(1101, groupID, "blocked")
 	blocked.Schedulable = false
 	warmup := strictHTTPAccount(1102, groupID, "warmup")
-	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
 	h, cleanup := newStrictMessagesHandler(t, cfg, group, []*service.Account{blocked, warmup}, &strictMessagesAccountRepo{byID: map[int64]*service.Account{
 		blocked.ID: blocked,
 		warmup.ID:  warmup,
@@ -57,8 +59,8 @@ func TestMessagesStrictBindingOnDoesNotReselect(t *testing.T) {
 	cache := &fakeSchedulerCache{accounts: []*service.Account{bound}}
 	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, other.ID: other}}
 	store := service.NewMemoryStrictSessionBindingStore()
-	cfg := &config.Config{RunMode: config.RunModeSimple}
-	cfg.Gateway.StrictSessionBinding.Enabled = true
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
+	cfg.binding.Enabled = true
 	h, cleanup := newStrictMessagesHandlerWithCache(t, cfg, group, cache, repo, store)
 	defer cleanup()
 
@@ -110,8 +112,8 @@ func TestMessagesStrictBindingSurvivesAPIKeyChangesAndChecksCurrentGroup(t *test
 	cache := &fakeSchedulerCache{accounts: []*service.Account{bound}}
 	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, other.ID: other}}
 	store := service.NewMemoryStrictSessionBindingStore()
-	cfg := &config.Config{RunMode: config.RunModeStandard}
-	cfg.Gateway.StrictSessionBinding.Enabled = true
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeStandard}}
+	cfg.binding.Enabled = true
 	h, cleanup := newStrictMessagesHandlerWithCache(t, cfg, group, cache, repo, store)
 	t.Cleanup(cleanup)
 
@@ -144,8 +146,8 @@ func TestMessagesStrictBindingRejectsMissingOrInvalidSessionID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(2104)
 	group := strictHTTPGroup(groupID)
-	cfg := &config.Config{RunMode: config.RunModeSimple}
-	cfg.Gateway.StrictSessionBinding.Enabled = true
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
+	cfg.binding.Enabled = true
 	h, cleanup := newStrictMessagesHandler(t, cfg, group, nil, &strictMessagesAccountRepo{}, service.NewMemoryStrictSessionBindingStore())
 	t.Cleanup(cleanup)
 	for _, metadata := range []string{"", `{"device_id":"device"}`, `{"session_id":42}`, `{"session_id":`} {
@@ -167,15 +169,15 @@ func TestDispatchStrictFallbackDoesNotCallThirdPartyAfterStreamStarted(t *testin
 	}))
 	t.Cleanup(upstream.Close)
 
-	cfg := &config.Config{}
-	cfg.Gateway.StrictSessionBinding.Enabled = true
-	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL
-	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
+	cfg := &strictMessagesTestConfig{}
+	cfg.binding.Enabled = true
+	cfg.binding.ThirdParty.Enabled = true
+	cfg.binding.ThirdParty.BaseURL = upstream.URL
+	cfg.binding.ThirdParty.APIKey = "relay-secret"
 	// cfg is unexported; construct through NewGatewayService so the third-party client is wired.
 	gw := newStrictGateway(cfg, nil, nil, nil)
 	require.True(t, gw.StrictThirdPartyEnabled())
-	h := &GatewayHandler{gatewayService: gw, cfg: cfg}
+	h := &GatewayHandler{gatewayService: gw, cfg: &cfg.Config}
 
 	t.Run("stream flag with unchanged writer size", func(t *testing.T) {
 		hits = 0
@@ -200,7 +202,11 @@ func TestDispatchStrictFallbackDoesNotCallThirdPartyAfterStreamStarted(t *testin
 	})
 }
 
-func newStrictGateway(cfg *config.Config, repo service.AccountRepository, groups service.GroupRepository, snapshot *service.SchedulerSnapshotService) *service.GatewayService {
+func newStrictGateway(cfg *strictMessagesTestConfig, repo service.AccountRepository, groups service.GroupRepository, snapshot *service.SchedulerSnapshotService, runtimeSettings ...*service.SettingService) *service.GatewayService {
+	settings := service.NewSettingService(strictHTTPSettings(cfg.binding), &cfg.Config)
+	if len(runtimeSettings) > 0 {
+		settings = runtimeSettings[0]
+	}
 	return service.NewGatewayService(
 		repo,
 		groups,
@@ -210,7 +216,7 @@ func newStrictGateway(cfg *config.Config, repo service.AccountRepository, groups
 		nil,
 		nil,
 		nil,
-		cfg,
+		&cfg.Config,
 		snapshot,
 		nil,
 		nil,
@@ -223,7 +229,7 @@ func newStrictGateway(cfg *config.Config, repo service.AccountRepository, groups
 		nil,
 		nil,
 		nil,
-		nil,
+		settings,
 		nil,
 		nil,
 		nil,
@@ -233,20 +239,20 @@ func newStrictGateway(cfg *config.Config, repo service.AccountRepository, groups
 	)
 }
 
-func newStrictMessagesHandler(t *testing.T, cfg *config.Config, group *service.Group, accounts []*service.Account, repo service.AccountRepository, store service.StrictSessionBindingStore) (*GatewayHandler, func()) {
+func newStrictMessagesHandler(t *testing.T, cfg *strictMessagesTestConfig, group *service.Group, accounts []*service.Account, repo service.AccountRepository, store service.StrictSessionBindingStore) (*GatewayHandler, func()) {
 	t.Helper()
 	return newStrictMessagesHandlerWithCache(t, cfg, group, &fakeSchedulerCache{accounts: accounts}, repo, store)
 }
 
-func newStrictMessagesHandlerWithCache(t *testing.T, cfg *config.Config, group *service.Group, cache *fakeSchedulerCache, repo service.AccountRepository, store service.StrictSessionBindingStore) (*GatewayHandler, func()) {
+func newStrictMessagesHandlerWithCache(t *testing.T, cfg *strictMessagesTestConfig, group *service.Group, cache *fakeSchedulerCache, repo service.AccountRepository, store service.StrictSessionBindingStore) (*GatewayHandler, func()) {
 	t.Helper()
 	return newStrictMessagesHandlerWithGroups(t, cfg, group, nil, cache, repo, store)
 }
 
-func newStrictMessagesHandlerWithGroups(t *testing.T, cfg *config.Config, group *service.Group, groups map[int64]*service.Group, cache *fakeSchedulerCache, repo service.AccountRepository, store service.StrictSessionBindingStore) (*GatewayHandler, func()) {
+func newStrictMessagesHandlerWithGroups(t *testing.T, cfg *strictMessagesTestConfig, group *service.Group, groups map[int64]*service.Group, cache *fakeSchedulerCache, repo service.AccountRepository, store service.StrictSessionBindingStore) (*GatewayHandler, func()) {
 	t.Helper()
 	if cfg == nil {
-		cfg = &config.Config{RunMode: config.RunModeSimple}
+		cfg = &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
 	}
 	snapshot := service.NewSchedulerSnapshotService(cache, nil, repo, nil, nil)
 	groupRepo := &fakeGroupRepo{group: group}
@@ -259,12 +265,12 @@ func newStrictMessagesHandlerWithGroups(t *testing.T, cfg *config.Config, group 
 	if cfg.RunMode != config.RunModeSimple {
 		billingCache = newHandlerInflightCache(100)
 	}
-	billing := service.NewBillingCacheService(billingCache, nil, nil, nil, nil, nil, cfg, nil)
+	billing := service.NewBillingCacheService(billingCache, nil, nil, nil, nil, nil, &cfg.Config, nil)
 	h := &GatewayHandler{
 		gatewayService:           gw,
 		billingCacheService:      billing,
 		concurrencyHelper:        NewConcurrencyHelper(service.NewConcurrencyService(&fakeConcurrencyCache{}), SSEPingFormatClaude, 0),
-		cfg:                      cfg,
+		cfg:                      &cfg.Config,
 		maxAccountSwitches:       10,
 		maxAccountSwitchesGemini: 3,
 	}
@@ -318,9 +324,9 @@ func postStrictMessagesWithAPIKey(t *testing.T, h *GatewayHandler, group *servic
 	return rec, id
 }
 
-func requireStrictStoreAccount(t *testing.T, store service.StrictSessionBindingStore, cfg *config.Config, groupID int64) int64 {
+func requireStrictStoreAccount(t *testing.T, store service.StrictSessionBindingStore, cfg *strictMessagesTestConfig, groupID int64) int64 {
 	t.Helper()
-	plan, err := service.ResolveStrictSessionPlan(cfg, service.StrictSessionIdentityInput{
+	plan, err := service.ResolveStrictSessionPlan(cfg.binding, service.StrictSessionIdentityInput{
 		APIKeyID:       3101,
 		GroupID:        &groupID,
 		MetadataUserID: strictHTTPMetadata(),
@@ -513,13 +519,13 @@ func TestMessagesStrictFallbackGroupDoesNotRewriteBinding(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	cfg := &config.Config{RunMode: config.RunModeSimple}
-	cfg.Gateway.StrictSessionBinding.Enabled = true
-	cfg.Gateway.StrictSessionBinding.FallbackOrder = config.StrictFallbackOrderGroupFirst
-	cfg.Gateway.StrictSessionBinding.FallbackGroupID = fallbackID
-	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL
-	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
+	cfg.binding.Enabled = true
+	cfg.binding.FallbackOrder = config.StrictFallbackOrderGroupFirst
+	cfg.binding.FallbackGroupID = fallbackID
+	cfg.binding.ThirdParty.Enabled = true
+	cfg.binding.ThirdParty.BaseURL = upstream.URL
+	cfg.binding.ThirdParty.APIKey = "relay-secret"
 
 	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, sibling, fallbackAccount}}
 	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{
@@ -570,13 +576,13 @@ func TestMessagesStrictFallbackOrderThirdPartyFirst(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	cfg := &config.Config{RunMode: config.RunModeSimple}
-	cfg.Gateway.StrictSessionBinding.Enabled = true
-	cfg.Gateway.StrictSessionBinding.FallbackOrder = config.StrictFallbackOrderThirdPartyFirst
-	cfg.Gateway.StrictSessionBinding.FallbackGroupID = fallbackID
-	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL
-	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
+	cfg.binding.Enabled = true
+	cfg.binding.FallbackOrder = config.StrictFallbackOrderThirdPartyFirst
+	cfg.binding.FallbackGroupID = fallbackID
+	cfg.binding.ThirdParty.Enabled = true
+	cfg.binding.ThirdParty.BaseURL = upstream.URL
+	cfg.binding.ThirdParty.APIKey = "relay-secret"
 	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, fallbackAccount}}
 	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, fallbackAccount.ID: fallbackAccount}}
 	store := service.NewMemoryStrictSessionBindingStore()
@@ -604,9 +610,9 @@ func TestMessagesStrictFallbackGroupEqualToOriginIsRejected(t *testing.T) {
 	origin := strictHTTPGroup(originID)
 	bound := strictHTTPAccount(1501, originID, "bound")
 	sibling := strictHTTPAccount(1502, originID, "sibling")
-	cfg := &config.Config{RunMode: config.RunModeSimple}
-	cfg.Gateway.StrictSessionBinding.Enabled = true
-	cfg.Gateway.StrictSessionBinding.FallbackGroupID = originID
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
+	cfg.binding.Enabled = true
+	cfg.binding.FallbackGroupID = originID
 	cache := &fakeSchedulerCache{accounts: []*service.Account{bound, sibling}}
 	repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{bound.ID: bound, sibling.ID: sibling}}
 	store := service.NewMemoryStrictSessionBindingStore()
@@ -623,4 +629,70 @@ func TestMessagesStrictFallbackGroupEqualToOriginIsRejected(t *testing.T) {
 	require.NotContains(t, second.Body.String(), "New Conversation")
 	require.NotEqual(t, sibling.ID, selected)
 	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, originID))
+}
+
+// Test inputs keep process settings separate from the database policy.
+type strictMessagesTestConfig struct {
+	config.Config
+	binding config.GatewayStrictSessionBindingConfig
+}
+
+type strictHTTPSettingsRepo struct {
+	service.SettingRepository
+	values map[string]string
+	err    error
+}
+
+func (r *strictHTTPSettingsRepo) GetAll(context.Context) (map[string]string, error) {
+	return r.values, r.err
+}
+func (r *strictHTTPSettingsRepo) GetValue(_ context.Context, key string) (string, error) {
+	value, ok := r.values[key]
+	if !ok {
+		return "", service.ErrSettingNotFound
+	}
+	return value, nil
+}
+func strictHTTPSettings(cfg config.GatewayStrictSessionBindingConfig) *strictHTTPSettingsRepo {
+	return &strictHTTPSettingsRepo{values: map[string]string{
+		service.SettingKeyStrictSessionBindingEnabled:           strconv.FormatBool(cfg.Enabled),
+		service.SettingKeyStrictSessionSessionHeader:            cfg.SessionHeaderOrDefault(),
+		service.SettingKeyStrictSessionSameAccountRetryLimit:    strconv.Itoa(cfg.SameAccountRetryLimit),
+		service.SettingKeyStrictSessionFallbackOrder:            cfg.FallbackOrder,
+		service.SettingKeyStrictSessionFallbackGroupID:          strconv.FormatInt(cfg.FallbackGroupID, 10),
+		service.SettingKeyStrictSessionThirdPartyEnabled:        strconv.FormatBool(cfg.ThirdParty.Enabled),
+		service.SettingKeyStrictSessionThirdPartyBaseURL:        cfg.ThirdParty.BaseURL,
+		service.SettingKeyStrictSessionThirdPartyAPIKey:         cfg.ThirdParty.APIKey,
+		service.SettingKeyStrictSessionThirdPartyTimeoutSeconds: strconv.Itoa(cfg.ThirdParty.TimeoutSeconds),
+	}}
+}
+
+func TestMessagesStrictConfigurationUnavailableReturns503BeforeStreaming(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &strictHTTPSettingsRepo{err: errors.New("database unavailable")}
+	settings := service.NewSettingService(repo, nil)
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeSimple}}
+	h := &GatewayHandler{gatewayService: newStrictGateway(cfg, nil, nil, nil, settings), cfg: &cfg.Config}
+	// No scheduling, concurrency or upstream dependencies are supplied: this must
+	// terminate before any of them, even when the caller asks for a stream.
+	for _, stream := range []bool{false, true} {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		raw, err := json.Marshal(map[string]any{"model": "claude-sonnet-4-5", "stream": stream, "max_tokens": 256, "messages": []any{map[string]any{"role": "user", "content": "test"}}})
+		require.NoError(t, err)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(raw))
+		group := strictHTTPGroup(2101)
+		key := &service.APIKey{ID: 1, UserID: 2, Group: group, GroupID: &group.ID, User: &service.User{ID: 2}}
+		c.Set(string(middleware.ContextKeyAPIKey), key)
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 2})
+		h.Messages(c)
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		require.Equal(t, "strict_session_config_unavailable", rec.Header().Get("X-Sub2API-Error-Code"))
+		require.Contains(t, rec.Body.String(), "config_unavailable")
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	plan, err := h.prepareStrictClaudeMessages(c, nil, service.PlatformGemini, "")
+	require.NoError(t, err)
+	require.False(t, plan.Active, "Gemini must not depend on the Claude binding configuration")
 }

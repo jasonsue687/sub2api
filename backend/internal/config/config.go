@@ -1105,10 +1105,6 @@ type GatewayConfig struct {
 	// Gemini 账户切换最大次数（Gemini 平台单独配置，因 API 限制更严格）
 	MaxAccountSwitchesGemini int `mapstructure:"max_account_switches_gemini"`
 
-	// StrictSessionBinding 可选的 Claude Messages 会话永久绑定。
-	// 默认关闭；关闭时官方调度行为不变。详见 docs/strict-session-binding.md。
-	StrictSessionBinding GatewayStrictSessionBindingConfig `mapstructure:"strict_session_binding"`
-
 	// Antigravity 429 fallback 限流时间（分钟），解析重置时间失败时使用
 	AntigravityFallbackCooldownMinutes int `mapstructure:"antigravity_fallback_cooldown_minutes"`
 
@@ -2431,7 +2427,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
-	setStrictSessionBindingDefaults()
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
@@ -2708,9 +2703,6 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
-	if err := c.Gateway.StrictSessionBinding.NormalizeAndValidate(); err != nil {
-		return fmt.Errorf("gateway.strict_session_binding: %w", err)
-	}
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
 	if err != nil {
 		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)

@@ -8,8 +8,7 @@ export type StrictSessionBindingForm = StrictSessionBindingAdminSettings & {
 };
 
 export const strictSessionBindingFormDefaults: StrictSessionBindingForm = {
-  strict_session_binding_source: "config",
-  strict_session_binding_enabled: false,
+  strict_session_binding_enabled: true,
   strict_session_session_header: "X-Session-Id",
   strict_session_same_account_retry_limit: -1,
   strict_session_fallback_order: "group_first",

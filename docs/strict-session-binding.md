@@ -1,6 +1,6 @@
 # Claude Messages 会话永久绑定
 
-默认关闭。关闭时，Claude Messages 的选号、粘性会话和故障转移保持官方行为，已有绑定数据也不会被删除。
+默认开启，仅在管理后台保存到数据库的配置中调整。关闭后恢复普通调度，正在使用的会话可能切换账号；绑定数据保留，重新开启后沿用原绑定。
 
 第一阶段只接入 `POST /v1/messages` 里非 Gemini 分组的路径。OpenAI、Gemini、count_tokens 以及其他供应商接口不会读写这张绑定表。
 
@@ -34,6 +34,7 @@
 | code | 含义 |
 | --- | --- |
 | `strict_session_id_required` | 严格模式缺少稳定会话 ID |
+| `strict_session_config_unavailable` | 配置读取失败且没有最近一次可信配置，未调用上游 |
 | `strict_session_store_unavailable` | 绑定存储读写失败，没有重新选号 |
 | `strict_session_fallback_required` | 两个回退目标都没配置，或都失败，且最后没有写出第三方响应 |
 | `strict_session_third_party_failed` | 第三方失败，且没有剩余的兜底分组可以再试 |
@@ -79,24 +80,11 @@ API Key 仍按现有流程鉴权、计费；绑定账号每次按当前请求的
 
 ## 配置
 
-```yaml
-gateway:
-  strict_session_binding:
-    enabled: false
-    session_header: "X-Session-Id"
-    same_account_retry_limit: -1
-    # group_first 或 third_party_first。默认先兜底分组。
-    fallback_order: group_first
-    # 0 表示不启用。不能在请求时等于这把 Key 的原分组。
-    fallback_group_id: 0
-    third_party:
-      enabled: false
-      base_url: ""
-      api_key: ""
-      timeout_seconds: 0
-```
+此功能不再读取 YAML 或 `GATEWAY_STRICT_SESSION_BINDING_*` 环境变量，也没有启动配置与管理页配置的优先级。旧配置文件中的相关条目应删除；原来只在 YAML 中设置的回退分组、第三方地址或密钥，需要在升级前记录并在管理页重新保存。
 
-环境变量与配置键对应，例如 `GATEWAY_STRICT_SESSION_BINDING_ENABLED=true`、`GATEWAY_STRICT_SESSION_BINDING_FALLBACK_ORDER=group_first`、`GATEWAY_STRICT_SESSION_BINDING_FALLBACK_GROUP_ID=20`、`GATEWAY_STRICT_SESSION_BINDING_THIRD_PARTY_API_KEY`。第三方地址必须是绝对 `http` 或 `https` URL，不能把凭据写进 URL，也不能跟随重定向。`base_url` 是 API 根，例如 `https://relay.example.com`；程序会请求 `{base}/v1/messages`。
+代码默认值：开启严格绑定、会话头 `X-Session-Id`、同账号重试 `-1`、回退顺序 `group_first`、兜底分组 `0`（不启用）、第三方关闭、超时 `0`。只有数据库读取成功且相应键不存在时才采用默认值；已保存的 `false` 不会被默认值覆盖。
+
+第三方地址必须是绝对 `http` 或 `https` URL，不能包含凭据，转发不会跟随重定向。地址是 API 根，例如 `https://relay.example.com`；程序请求 `{base}/v1/messages`。
 
 ## 管理后台
 
@@ -104,12 +92,14 @@ gateway:
 
 可配置：启用开关、回退顺序、兜底分组（下拉只列出启用中的 Anthropic / Antigravity 分组）、同账号重试、会话头、第三方地址 / 密钥 / 超时。密钥按现有敏感字段处理：接口只返回 `strict_session_third_party_api_key_configured`，不回显明文；保存时留空表示保留已有密钥。
 
-优先级：
+配置生效与故障行为：
 
-- 管理员还没在页面上保存过这些字段时，生效的是进程启动时的 yaml / 环境变量。
-- 页面一旦保存，数据库成为事实来源，下一次请求立即使用，不需要重启。请求热路径有 30 秒缓存，保存时会立刻写入这份缓存。
-- 保存之后再改 yaml 或环境变量，不会盖过数据库，直到再次在页面上保存。
-- 旧客户端保存设置时如果省略这些字段，不会把已保存的严格会话配置清掉。
+- 保存前校验，数据库写入成功后立即更新当前实例缓存；写入失败保持原缓存不变。旧客户端省略这些字段时不修改严格会话配置。
+- 每个请求开始时取一份完整配置，身份解析、重试与第三方转发均沿用这份快照；保存设置影响后续请求。
+- 各实例缓存有效期 30 秒。其他实例最多在下一次缓存过期读取后生效，无需重启；数据库故障时可能延迟更久。
+- 刷新失败时保留最近一次成功读取的整份配置（包括开关、回退地址和密钥），记录错误，并在 5 秒后允许重试，不会临时套用部分默认值。
+- 冷启动没有可信配置且数据库读取失败时，相关 Messages 请求返回 503 `strict_session_config_unavailable`，不调用上游；管理路由不经过这个拦截，可以在依赖恢复后继续调整配置。
+- 缓存刷新与本实例保存串行，旧的刷新结果不会覆盖刚刚提交的新配置。其他实例仍使用上述 30 秒刷新规则。
 
 页面上的分组校验不能预先知道每把 Key 的原分组，所以「兜底分组等于原分组」仍在请求时跳过。
 
@@ -123,22 +113,24 @@ gateway:
 
 迁移文件：`backend/migrations/242_strict_session_bindings.sql`。它只创建 `strict_session_bindings`。`binding_key` 是 `VARCHAR(64)`，避免 `CHAR` 补空格。`account_id` 没有外键，删除账号不会级联删除绑定，因此「从未分配」和「原账号已不存在」可以区分。
 
+新增迁移 `243_strict_session_settings_database_only.sql` 只清理旧版 `override=false` 自动种下的无效默认配置，并删除旧来源标记；`override=true` 的管理员配置（包括关闭状态）和没有旧标记的显式配置均保留。迁移不修改绑定表，可重复执行。仅在旧 YAML 中配置过的值不会自动导入数据库。
+
 启用：
 
 1. 先备份数据库。永久指应用不会自动过期，不表示可以不备份。
 2. 发布包含该迁移的版本，确认 `strict_session_bindings` 已创建。
-3. 将 `gateway.strict_session_binding.enabled` 设为 `true` 后重启。
+3. 检查管理页配置。未保存过配置的新安装默认开启，缺少会话 ID 的 Messages 请求会返回 400。
 4. 如需进程内中转，再打开 `third_party` 并提供地址和密钥。否则保持关闭，由外层识别错误码。
 
 回滚：
 
-1. 把 `enabled` 设为 `false` 并重启。官方调度立即恢复，绑定表保留。
+1. 在管理页关闭开关并保存。当前实例后续请求恢复普通调度，其他实例等待缓存刷新；绑定表保留。
 2. 回退到没有这段代码的旧版本同样不会删除绑定表。旧版本会忽略这张表。
 3. 不要为了关闭功能而 `DROP TABLE`。只有确认不再需要这些会话关系时，才由运维另行归档或删除。
 
 ## 日志
 
-`strict_session.dispatch` 以及 handler 的 `strict_session.*` 只记录原账号 ID、会话短指纹、回退原因和最终链路（`origin`、`origin_check`、`third_party`、`error`、`stream_interrupted`）。严格模式开启后，`GenerateSessionHash` 和粘性调试日志同样只记录短指纹或是否存在设备 ID，不记录正文、Token、Cookie、完整 `session_id`、`device_id` 或 `metadata.user_id`。功能关闭时这些官方日志保持原样。
+`strict_session.dispatch` 以及 handler 的 `strict_session.*` 只记录原账号 ID、会话短指纹、回退原因和最终链路（`origin`、`origin_check`、`third_party`、`error`、`stream_interrupted`）。严格模式开启后，`GenerateSessionHash` 和粘性调试日志同样只记录短指纹或是否存在设备 ID，不记录正文、Token、Cookie、完整 `session_id`、`device_id` 或 `metadata.user_id`。Messages 请求明确关闭此功能时仍沿用普通粘性日志；没有请求配置快照的共享哈希入口默认脱敏，不额外读取配置。
 
 ## 审查修正
 

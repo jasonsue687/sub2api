@@ -4,30 +4,28 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-
-	"github.com/spf13/viper"
 )
 
 // GatewayStrictSessionBindingConfig 控制 Claude Messages 会话永久绑定。
 // 绑定写入数据库，不因 TTL、缓存清空或账号删除而消失。
 type GatewayStrictSessionBindingConfig struct {
-	// Enabled 默认 false。关闭时不读取、不写入绑定，调度保持官方行为。
-	Enabled bool `mapstructure:"enabled"`
+	// Enabled 默认 true。关闭时不读取、不写入绑定，调度保持官方行为。
+	Enabled bool
 	// SessionHeader 是 metadata.user_id / X-Claude-Code-Session-Id 之外的稳定会话头。
 	// 默认 X-Session-Id。内容摘要永远不会被当作永久会话 ID。
-	SessionHeader string `mapstructure:"session_header"`
+	SessionHeader string
 	// SameAccountRetryLimit 限制原账号上的可安全重试次数。
 	// 0 禁用同账号重试。大于 0 时收紧上限。-1 沿用账号的 pool_mode_retry_count。
-	SameAccountRetryLimit int `mapstructure:"same_account_retry_limit"`
+	SameAccountRetryLimit int
 	// FallbackOrder 决定原账号不能承接时先尝试哪个回退目标。
 	// group_first（默认）先走兜底分组，失败且响应未写出时再走第三方。
 	// third_party_first 顺序相反。只配置了一个目标时，另一个会被跳过。
-	FallbackOrder string `mapstructure:"fallback_order"`
+	FallbackOrder string
 	// FallbackGroupID 是 Sub2API 内的兜底分组。0 表示不启用。
 	// 请求所属分组与它相同时，该请求不会使用这个目标，也不会回到原分组账号池。
-	FallbackGroupID int64 `mapstructure:"fallback_group_id"`
+	FallbackGroupID int64
 	// ThirdParty 是独立于订阅账号池的中转目标。
-	ThirdParty GatewayStrictThirdPartyConfig `mapstructure:"third_party"`
+	ThirdParty GatewayStrictThirdPartyConfig
 }
 
 const (
@@ -39,12 +37,12 @@ const (
 
 // GatewayStrictThirdPartyConfig 是严格绑定失败后的独立中转，不会进入订阅账号池。
 type GatewayStrictThirdPartyConfig struct {
-	Enabled bool   `mapstructure:"enabled"`
-	BaseURL string `mapstructure:"base_url"`
-	APIKey  string `mapstructure:"api_key"`
+	Enabled bool
+	BaseURL string
+	APIKey  string
 	// TimeoutSeconds 是等待响应头以及两次读之间的空闲上限，不是整段响应体的总时长。
 	// 0 使用内置默认：响应头 60 秒，流空闲 5 分钟。活跃的长流不会被总时长截断。
-	TimeoutSeconds int `mapstructure:"timeout_seconds"`
+	TimeoutSeconds int
 }
 
 // SessionHeaderOrDefault 返回严格模式接受的附加会话头。
@@ -119,14 +117,12 @@ func validateOptionalHTTPHeaderName(name string) error {
 	return nil
 }
 
-func setStrictSessionBindingDefaults() {
-	viper.SetDefault("gateway.strict_session_binding.enabled", false)
-	viper.SetDefault("gateway.strict_session_binding.session_header", "X-Session-Id")
-	viper.SetDefault("gateway.strict_session_binding.same_account_retry_limit", -1)
-	viper.SetDefault("gateway.strict_session_binding.fallback_order", StrictFallbackOrderGroupFirst)
-	viper.SetDefault("gateway.strict_session_binding.fallback_group_id", 0)
-	viper.SetDefault("gateway.strict_session_binding.third_party.enabled", false)
-	viper.SetDefault("gateway.strict_session_binding.third_party.base_url", "")
-	viper.SetDefault("gateway.strict_session_binding.third_party.api_key", "")
-	viper.SetDefault("gateway.strict_session_binding.third_party.timeout_seconds", 0)
+// DefaultStrictSessionBindingConfig is used only after a successful database read.
+func DefaultStrictSessionBindingConfig() GatewayStrictSessionBindingConfig {
+	return GatewayStrictSessionBindingConfig{
+		Enabled:               true,
+		SessionHeader:         "X-Session-Id",
+		SameAccountRetryLimit: -1,
+		FallbackOrder:         StrictFallbackOrderGroupFirst,
+	}
 }

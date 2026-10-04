@@ -1,6 +1,5 @@
 /** Admin view of strict Claude Messages session binding. The API key is never returned. */
 export interface StrictSessionBindingAdminSettings {
-  strict_session_binding_source: "database" | "config" | string;
   strict_session_binding_enabled: boolean;
   strict_session_session_header: string;
   strict_session_same_account_retry_limit: number;

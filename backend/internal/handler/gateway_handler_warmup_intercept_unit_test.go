@@ -288,7 +288,7 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_MixedScheduli
 	req := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(context.WithValue(req.Context(), ctxkey.Group, group))
-	c.Request = req
+	c.Request = req.WithContext(service.WithStrictSessionBindingConfig(req.Context(), config.GatewayStrictSessionBindingConfig{Enabled: false}))
 
 	apiKey := &service.APIKey{
 		ID:      3001,
@@ -379,7 +379,7 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_ForcePlatform
 	ctx := context.WithValue(req.Context(), ctxkey.Group, group)
 	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, service.PlatformAntigravity)
 	req = req.WithContext(ctx)
-	c.Request = req
+	c.Request = req.WithContext(service.WithStrictSessionBindingConfig(req.Context(), config.GatewayStrictSessionBindingConfig{Enabled: false}))
 	c.Set(string(middleware.ContextKeyForcePlatform), service.PlatformAntigravity)
 
 	apiKey := &service.APIKey{

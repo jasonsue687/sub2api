@@ -271,9 +271,6 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		SettingKeyAllowUserViewErrorRequests: "false",
 	}
-	for key, value := range strictSessionBindingDefaultSettings() {
-		defaults[key] = value
-	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
 }

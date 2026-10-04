@@ -209,11 +209,11 @@ func (s *MemoryStrictSessionBindingStore) Create(_ context.Context, binding *Str
 
 // ResolveStrictSessionPlan 只根据配置和稳定会话身份生成计划。
 // 内容摘要、消息哈希不在输入里，因此不能变成永久会话键。
-func ResolveStrictSessionPlan(cfg *config.Config, in StrictSessionIdentityInput) (*StrictSessionPlan, error) {
-	if cfg == nil || !cfg.Gateway.StrictSessionBinding.Enabled {
+func ResolveStrictSessionPlan(cfg config.GatewayStrictSessionBindingConfig, in StrictSessionIdentityInput) (*StrictSessionPlan, error) {
+	if !cfg.Enabled {
 		return &StrictSessionPlan{}, nil
 	}
-	bindingCfg := cfg.Gateway.StrictSessionBinding
+	bindingCfg := cfg
 	sessionID, err := resolveStrictSessionID(in)
 	if err != nil {
 		return nil, err
@@ -350,8 +350,8 @@ type strictSessionGateway struct {
 	strictThirdPartyHTTP *http.Client
 }
 
-func (s *GatewayService) logStickyMetadataSession(uid *ParsedUserID) {
-	if s.strictSessionLogsRedacted() {
+func (s *GatewayService) logStickyMetadataSession(ctx context.Context, uid *ParsedUserID) {
+	if s.strictSessionLogsRedacted(ctx) {
 		slog.Info("sticky.hash_source",
 			"source", "metadata_user_id",
 			"session_fp", StrictSessionFingerprint(uid.SessionID),
@@ -368,8 +368,8 @@ func (s *GatewayService) logStickyMetadataSession(uid *ParsedUserID) {
 	)
 }
 
-func (s *GatewayService) logStickyMetadataParseFailed(metadataUserID string, parsedNil bool) {
-	if s.strictSessionLogsRedacted() {
+func (s *GatewayService) logStickyMetadataParseFailed(ctx context.Context, metadataUserID string, parsedNil bool) {
+	if s.strictSessionLogsRedacted(ctx) {
 		slog.Info("sticky.hash_metadata_parse_failed",
 			"metadata_fp", StrictSessionFingerprint(metadataUserID),
 			"parsed_nil", parsedNil,
@@ -383,16 +383,9 @@ func (s *GatewayService) logStickyMetadataParseFailed(metadataUserID string, par
 }
 
 // strictSessionLogsRedacted 在严格模式开启时禁止把完整会话身份写入日志。
-func (s *GatewayService) strictSessionLogsRedacted() bool {
-	if s == nil {
-		return false
-	}
-	if s.settingService != nil {
-		if cfg, ok := s.settingService.StrictSessionBindingOverride(context.Background()); ok {
-			return cfg.Enabled
-		}
-	}
-	return s.cfg != nil && s.cfg.Gateway.StrictSessionBinding.Enabled
+func (s *GatewayService) strictSessionLogsRedacted(ctx context.Context) bool {
+	cfg, ok := StrictSessionBindingConfigFromContext(ctx)
+	return !ok || cfg.Enabled
 }
 
 func (s *GatewayService) SetStrictSessionBindingStore(store StrictSessionBindingStore) {
@@ -402,34 +395,34 @@ func (s *GatewayService) SetStrictSessionBindingStore(store StrictSessionBinding
 	s.strictSessionStore = store
 }
 
-// EffectiveStrictSessionBinding 返回本次请求生效的严格绑定配置。
-// 管理员在后台保存过后以数据库为准，并且不需要重启；尚未保存过时使用 yaml / 环境变量。
-func (s *GatewayService) EffectiveStrictSessionBinding(ctx context.Context) config.GatewayStrictSessionBindingConfig {
-	base := config.GatewayStrictSessionBindingConfig{}
-	if s != nil && s.cfg != nil {
-		base = s.cfg.Gateway.StrictSessionBinding
-	}
-	if s == nil || s.settingService == nil {
-		return base
-	}
-	override, ok := s.settingService.StrictSessionBindingOverride(ctx)
-	if !ok {
-		return base
-	}
-	return override
+type strictSessionConfigContextKey struct{}
+
+// WithStrictSessionBindingConfig pins one immutable policy for the entire request.
+func WithStrictSessionBindingConfig(ctx context.Context, cfg config.GatewayStrictSessionBindingConfig) context.Context {
+	return context.WithValue(ctx, strictSessionConfigContextKey{}, cfg)
 }
 
-// PrepareStrictSession 解析身份并读取已有绑定。存储读失败不会变成“新会话”。
+func StrictSessionBindingConfigFromContext(ctx context.Context) (config.GatewayStrictSessionBindingConfig, bool) {
+	cfg, ok := ctx.Value(strictSessionConfigContextKey{}).(config.GatewayStrictSessionBindingConfig)
+	return cfg, ok
+}
+
+// EffectiveStrictSessionBinding reads only the runtime database policy.
+func (s *GatewayService) EffectiveStrictSessionBinding(ctx context.Context) (config.GatewayStrictSessionBindingConfig, error) {
+	if cfg, ok := StrictSessionBindingConfigFromContext(ctx); ok {
+		return cfg, nil
+	}
+	if s == nil {
+		return config.GatewayStrictSessionBindingConfig{}, ErrStrictSessionConfigUnavailable
+	}
+	return s.settingService.StrictSessionBindingConfig(ctx)
+}
+
+// PrepareStrictSession never treats a configuration or binding read failure as a new session.
 func (s *GatewayService) PrepareStrictSession(ctx context.Context, in StrictSessionIdentityInput) (*StrictSessionPlan, error) {
-	cfg := s.cfg
-	if s != nil {
-		effective := s.EffectiveStrictSessionBinding(ctx)
-		copied := config.Config{}
-		if s.cfg != nil {
-			copied = *s.cfg
-		}
-		copied.Gateway.StrictSessionBinding = effective
-		cfg = &copied
+	cfg, err := s.EffectiveStrictSessionBinding(ctx)
+	if err != nil {
+		return nil, err
 	}
 	plan, err := ResolveStrictSessionPlan(cfg, in)
 	if err != nil || plan == nil || !plan.Active {

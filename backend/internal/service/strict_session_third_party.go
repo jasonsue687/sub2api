@@ -90,8 +90,8 @@ func (s *GatewayService) SetStrictThirdPartyHTTPClient(client *http.Client) {
 }
 
 func (s *GatewayService) strictThirdPartyConfig(ctx context.Context) (config.GatewayStrictThirdPartyConfig, bool) {
-	cfg := s.EffectiveStrictSessionBinding(ctx)
-	if !cfg.Enabled || !StrictThirdPartyConfigured(cfg.ThirdParty) {
+	cfg, err := s.EffectiveStrictSessionBinding(ctx)
+	if err != nil || !cfg.Enabled || !StrictThirdPartyConfigured(cfg.ThirdParty) {
 		return cfg.ThirdParty, false
 	}
 	return cfg.ThirdParty, true

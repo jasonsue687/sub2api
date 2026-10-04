@@ -21,9 +21,9 @@ import (
 
 const strictTestSessionID = "c72554f2-1234-5678-abcd-123456789abc"
 
-func strictTestConfig(enabled bool) *config.Config {
-	cfg := &config.Config{}
-	cfg.Gateway.StrictSessionBinding.Enabled = enabled
+func strictTestConfig(enabled bool) config.GatewayStrictSessionBindingConfig {
+	cfg := config.DefaultStrictSessionBindingConfig()
+	cfg.Enabled = enabled
 	return cfg
 }
 
@@ -32,7 +32,7 @@ func TestStickySessionTTLRemainsOneHour(t *testing.T) {
 }
 
 func TestStrictPlanInactiveWhenDisabled(t *testing.T) {
-	plan, err := ResolveStrictSessionPlan(nil, StrictSessionIdentityInput{APIKeyID: 1, SessionHeaderValue: "sess"})
+	plan, err := ResolveStrictSessionPlan(config.GatewayStrictSessionBindingConfig{}, StrictSessionIdentityInput{APIKeyID: 1, SessionHeaderValue: "sess"})
 	require.NoError(t, err)
 	require.False(t, plan.Active)
 
@@ -455,12 +455,12 @@ func TestThirdPartyResultDoesNotChangeBinding(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	cfg := strictTestConfig(true)
-	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL
-	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
-	svc := &GatewayService{cfg: cfg}
+	cfg.ThirdParty.Enabled = true
+	cfg.ThirdParty.BaseURL = upstream.URL
+	cfg.ThirdParty.APIKey = "relay-secret"
+	svc := &GatewayService{}
 	recorder := httptest.NewRecorder()
-	err := svc.ForwardStrictThirdParty(context.Background(), http.Header{"Authorization": []string{"Bearer client"}}, []byte(`{"messages":[{"content":"hello"}]}`), recorder)
+	err := svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), http.Header{"Authorization": []string{"Bearer client"}}, []byte(`{"messages":[{"content":"hello"}]}`), recorder)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Contains(t, recorder.Body.String(), `"ok":true`)
@@ -472,7 +472,7 @@ func TestThirdPartyResultDoesNotChangeBinding(t *testing.T) {
 	upstream.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusBadGateway)
 	})
-	err = svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{"messages":[]}`), httptest.NewRecorder())
+	err = svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"messages":[]}`), httptest.NewRecorder())
 	var statusErr *StrictThirdPartyStatusError
 	require.ErrorAs(t, err, &statusErr)
 	require.Equal(t, http.StatusBadGateway, statusErr.StatusCode)
@@ -483,10 +483,10 @@ func TestThirdPartyResultDoesNotChangeBinding(t *testing.T) {
 
 func TestThirdPartyPartialBodyIsNotRetried(t *testing.T) {
 	cfg := strictTestConfig(true)
-	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = "https://relay.example"
-	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
-	svc := &GatewayService{cfg: cfg, strictSessionGateway: strictSessionGateway{strictThirdPartyHTTP: &http.Client{Transport: strictRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	cfg.ThirdParty.Enabled = true
+	cfg.ThirdParty.BaseURL = "https://relay.example"
+	cfg.ThirdParty.APIKey = "relay-secret"
+	svc := &GatewayService{strictSessionGateway: strictSessionGateway{strictThirdPartyHTTP: &http.Client{Transport: strictRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -495,7 +495,7 @@ func TestThirdPartyPartialBodyIsNotRetried(t *testing.T) {
 		}, nil
 	})}}}
 	recorder := httptest.NewRecorder()
-	err := svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{"stream":true}`), recorder)
+	err := svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"stream":true}`), recorder)
 	var statusErr *StrictThirdPartyStatusError
 	require.ErrorAs(t, err, &statusErr)
 	require.True(t, statusErr.WroteBody)
@@ -517,9 +517,9 @@ func TestBindingSurvivesDisableAndReenable(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStrictSessionBindingStore()
 	cfg := strictTestConfig(true)
-	svc := &GatewayService{cfg: cfg, strictSessionStore: store}
+	svc := &GatewayService{strictSessionStore: store}
 	in := StrictSessionIdentityInput{APIKeyID: 4, SessionHeaderValue: "persist-session"}
-	plan, err := svc.PrepareStrictSession(ctx, in)
+	plan, err := svc.PrepareStrictSession(WithStrictSessionBindingConfig(ctx, cfg), in)
 	require.NoError(t, err)
 	require.True(t, plan.Active)
 	require.Zero(t, plan.BoundAccountID)
@@ -537,16 +537,16 @@ func TestBindingSurvivesDisableAndReenable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(8), selected.Account.ID)
 
-	cfg.Gateway.StrictSessionBinding.Enabled = false
-	disabled, err := svc.PrepareStrictSession(ctx, in)
+	cfg.Enabled = false
+	disabled, err := svc.PrepareStrictSession(WithStrictSessionBindingConfig(ctx, cfg), in)
 	require.NoError(t, err)
 	require.False(t, disabled.Active)
 	stored, err := store.Get(ctx, plan.BindingKey)
 	require.NoError(t, err)
 	require.Equal(t, int64(8), stored.AccountID)
 
-	cfg.Gateway.StrictSessionBinding.Enabled = true
-	again, err := svc.PrepareStrictSession(ctx, in)
+	cfg.Enabled = true
+	again, err := svc.PrepareStrictSession(WithStrictSessionBindingConfig(ctx, cfg), in)
 	require.NoError(t, err)
 	require.True(t, again.Active)
 	require.Equal(t, int64(8), again.BoundAccountID)
@@ -599,7 +599,7 @@ func TestGenerateSessionHashRedactsIdentityWhenStrict(t *testing.T) {
 	require.Contains(t, metadata, sessionID)
 	require.Contains(t, metadata, deviceID)
 
-	svc := &GatewayService{cfg: strictTestConfig(true)}
+	svc := &GatewayService{}
 	require.Equal(t, sessionID, svc.GenerateSessionHash(&ParsedRequest{MetadataUserID: metadata}))
 	logged := buf.String()
 	require.NotContains(t, logged, sessionID)
@@ -640,27 +640,27 @@ func TestThirdPartyPassthrough4xxRejectsRedirectAndFlushes(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	cfg := strictTestConfig(true)
-	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
-	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
-	cfg.Gateway.StrictSessionBinding.ThirdParty.TimeoutSeconds = 2
-	svc := &GatewayService{cfg: cfg}
+	cfg.ThirdParty.Enabled = true
+	cfg.ThirdParty.APIKey = "relay-secret"
+	cfg.ThirdParty.TimeoutSeconds = 2
+	svc := &GatewayService{}
 
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL + "/client"
+	cfg.ThirdParty.BaseURL = upstream.URL + "/client"
 	recorder := httptest.NewRecorder()
-	err := svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{"model":"claude"}`), recorder)
+	err := svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"model":"claude"}`), recorder)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "model not supported")
 	require.NotContains(t, recorder.Body.String(), "relay-secret")
 
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL + "/redirect"
-	err = svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{}`), httptest.NewRecorder())
+	cfg.ThirdParty.BaseURL = upstream.URL + "/redirect"
+	err = svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{}`), httptest.NewRecorder())
 	require.Error(t, err)
 	require.Zero(t, redirected.Load())
 
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL + "/stream"
+	cfg.ThirdParty.BaseURL = upstream.URL + "/stream"
 	streamRecorder := httptest.NewRecorder()
-	err = svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{"stream":true}`), streamRecorder)
+	err = svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"stream":true}`), streamRecorder)
 	require.NoError(t, err)
 	require.True(t, streamRecorder.Flushed)
 	require.Contains(t, streamRecorder.Body.String(), "data: two")
@@ -688,17 +688,17 @@ func TestThirdPartyHeaderTimeoutDoesNotCutActiveStream(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	cfg := strictTestConfig(true)
-	cfg.Gateway.StrictSessionBinding.ThirdParty.Enabled = true
-	cfg.Gateway.StrictSessionBinding.ThirdParty.APIKey = "relay-secret"
-	cfg.Gateway.StrictSessionBinding.ThirdParty.TimeoutSeconds = 1
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL + "/hang-header"
-	svc := &GatewayService{cfg: cfg}
-	err := svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{}`), httptest.NewRecorder())
+	cfg.ThirdParty.Enabled = true
+	cfg.ThirdParty.APIKey = "relay-secret"
+	cfg.ThirdParty.TimeoutSeconds = 1
+	cfg.ThirdParty.BaseURL = upstream.URL + "/hang-header"
+	svc := &GatewayService{}
+	err := svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{}`), httptest.NewRecorder())
 	require.Error(t, err)
 
-	cfg.Gateway.StrictSessionBinding.ThirdParty.BaseURL = upstream.URL + "/slow-body"
+	cfg.ThirdParty.BaseURL = upstream.URL + "/slow-body"
 	recorder := httptest.NewRecorder()
-	err = svc.ForwardStrictThirdParty(context.Background(), nil, []byte(`{"stream":true}`), recorder)
+	err = svc.ForwardStrictThirdParty(WithStrictSessionBindingConfig(context.Background(), cfg), nil, []byte(`{"stream":true}`), recorder)
 	require.NoError(t, err)
 	require.Equal(t, 4, bytes.Count(recorder.Body.Bytes(), []byte("data: chunk")))
 }

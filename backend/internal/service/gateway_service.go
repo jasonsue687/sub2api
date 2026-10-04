@@ -890,6 +890,10 @@ func NewGatewayService(
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
 func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
+	return s.GenerateSessionHashWithContext(context.Background(), parsed)
+}
+
+func (s *GatewayService) GenerateSessionHashWithContext(ctx context.Context, parsed *ParsedRequest) string {
 	if parsed == nil {
 		return ""
 	}
@@ -898,10 +902,10 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed.MetadataUserID != "" {
 		uid := ParseMetadataUserID(parsed.MetadataUserID)
 		if uid != nil && uid.SessionID != "" {
-			s.logStickyMetadataSession(uid)
+			s.logStickyMetadataSession(ctx, uid)
 			return uid.SessionID
 		}
-		s.logStickyMetadataParseFailed(parsed.MetadataUserID, uid == nil)
+		s.logStickyMetadataParseFailed(ctx, parsed.MetadataUserID, uid == nil)
 	}
 
 	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容

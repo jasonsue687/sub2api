@@ -533,45 +533,6 @@ gateway:
   # Allow failover on selected 400 errors (default: off)
   # 允许在特定 400 错误时进行故障转移（默认：关闭）
   failover_on_400: false
-  # Optional permanent Claude Messages session binding. Default off.
-  # 可选的 Claude Messages 会话永久绑定。默认关闭，关闭时官方调度不变。
-  # 说明见 docs/strict-session-binding.md。
-  strict_session_binding:
-    enabled: false
-    # Bind by client session ID alone, across API keys. No end-user identity is needed.
-    # 仅按客户端会话 ID 绑定，换 Key 后沿用原绑定，无需终端用户信息。
-    # Extra stable session header. metadata.user_id and X-Claude-Code-Session-Id are always accepted.
-    # 额外的稳定会话头。metadata.user_id 与 X-Claude-Code-Session-Id 始终有效。
-    session_header: "X-Session-Id"
-    # -1 inherits the account pool_mode_retry_count.
-    # 0 disables same-account retries, including deadline-based retries.
-    # A positive value caps retries even when the account allows more.
-    # -1 沿用账号同账号重试上限。0 禁用同账号重试。大于 0 时再收紧。
-    same_account_retry_limit: -1
-    # group_first tries the in-product fallback group, then the third party.
-    # third_party_first reverses that. A target that is not configured is skipped.
-    # If the first target fails before any response bytes, the other is tried.
-    # A started stream is never spliced. group_first is the default because the
-    # fallback group keeps Sub2API scheduling, model mapping, and billing.
-    # group_first 先走兜底分组再走第三方。未配置的目标会跳过。
-    # 第一个目标失败且响应未写出时才尝试下一个。流已开始后不拼接。
-    fallback_order: group_first
-    # Another Sub2API group. 0 disables it. It must not equal the request's own
-    # group; that request skips the target instead of reentering the origin pool.
-    # Sticky selection inside this group lasts 1h and is not the primary binding.
-    # 兜底分组。0 表示不启用。不能等于请求自己的分组。
-    fallback_group_id: 0
-    # Independent relay. Leave disabled to return strict_session_fallback_required
-    # so an outer New API gateway can route to its own third-party channel.
-    # 独立中转。关闭时返回 strict_session_fallback_required，由外层 New API 转指定渠道。
-    # timeout_seconds bounds the response header and the idle gap between body
-    # reads. It is not a total body deadline. 0 means 60s header / 5min stall.
-    # Redirects are rejected. 4xx responses are passed through unchanged.
-    third_party:
-      enabled: false
-      base_url: ""
-      api_key: ""
-      timeout_seconds: 0
   # Scheduling configuration
   # 调度配置
   scheduling:

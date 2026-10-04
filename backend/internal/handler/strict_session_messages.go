@@ -22,6 +22,7 @@ const (
 const (
 	strictSessionErrorType              = "session_binding_error"
 	strictSessionErrorIDRequired        = "strict_session_id_required"
+	strictSessionErrorConfigUnavailable = "strict_session_config_unavailable"
 	strictSessionErrorStoreUnavailable  = "strict_session_store_unavailable"
 	strictSessionErrorFallbackRequired  = "strict_session_fallback_required"
 	strictSessionErrorThirdPartyFailed  = "strict_session_third_party_failed"
@@ -51,35 +52,39 @@ func (h *GatewayHandler) strictSessionEnabled(c *gin.Context) bool {
 	return h.effectiveStrictBinding(c).Enabled
 }
 
+// Logging/recovery helpers only inspect the request snapshot and never reload it.
 func (h *GatewayHandler) effectiveStrictBinding(c *gin.Context) config.GatewayStrictSessionBindingConfig {
-	if h == nil {
+	if c == nil || c.Request == nil {
 		return config.GatewayStrictSessionBindingConfig{}
 	}
-	if h.gatewayService != nil {
-		ctx := context.Background()
-		if c != nil && c.Request != nil {
-			ctx = c.Request.Context()
-		}
-		return h.gatewayService.EffectiveStrictSessionBinding(ctx)
+	cfg, _ := service.StrictSessionBindingConfigFromContext(c.Request.Context())
+	return cfg
+}
+
+func (h *GatewayHandler) snapshotStrictBinding(c *gin.Context) (config.GatewayStrictSessionBindingConfig, error) {
+	cfg, err := h.gatewayService.EffectiveStrictSessionBinding(c.Request.Context())
+	if err != nil {
+		return config.GatewayStrictSessionBindingConfig{}, err
 	}
-	if h.cfg != nil {
-		return h.cfg.Gateway.StrictSessionBinding
-	}
-	return config.GatewayStrictSessionBindingConfig{}
+	c.Request = c.Request.WithContext(service.WithStrictSessionBindingConfig(c.Request.Context(), cfg))
+	return cfg, nil
 }
 
 // prepareStrictClaudeMessages 只在非 Gemini 的 /v1/messages 路径调用。
 // 缺少稳定会话 ID 或存储读失败时直接拒绝，不用消息摘要顶替。
 func (h *GatewayHandler) prepareStrictClaudeMessages(c *gin.Context, apiKey *service.APIKey, requestPlatform, metadataUserID string) (*strictSessionRuntime, error) {
-	bindingCfg := h.effectiveStrictBinding(c)
+	if requestPlatform == service.PlatformGemini {
+		return &strictSessionRuntime{}, nil
+	}
+	bindingCfg, err := h.snapshotStrictBinding(c)
+	if err != nil {
+		return nil, err
+	}
 	originGroupID := int64(0)
 	if apiKey != nil && apiKey.GroupID != nil {
 		originGroupID = *apiKey.GroupID
 	}
 	if !bindingCfg.Enabled || apiKey == nil {
-		return &strictSessionRuntime{Config: bindingCfg, OriginGroupID: originGroupID}, nil
-	}
-	if requestPlatform == service.PlatformGemini {
 		return &strictSessionRuntime{Config: bindingCfg, OriginGroupID: originGroupID}, nil
 	}
 	input := service.StrictSessionIdentityInput{
@@ -134,6 +139,8 @@ func (h *GatewayHandler) selectMessageAccount(
 
 func (h *GatewayHandler) writeStrictSessionSetupError(c *gin.Context, reqLog *zap.Logger, err error, streamStarted bool) {
 	switch {
+	case errors.Is(err, service.ErrStrictSessionConfigUnavailable):
+		h.respondStrictSessionError(c, http.StatusServiceUnavailable, strictSessionErrorConfigUnavailable, "config_unavailable", streamStarted)
 	case errors.Is(err, service.ErrStrictSessionIDRequired):
 		h.respondStrictSessionError(c, http.StatusBadRequest, strictSessionErrorIDRequired, "stable_session_id_required", streamStarted)
 	default:
@@ -268,7 +275,7 @@ func (h *GatewayHandler) dispatchStrictFallback(
 }
 
 func (h *GatewayHandler) recoveryConfig(c *gin.Context, rt *strictSessionRuntime) config.GatewayStrictSessionBindingConfig {
-	if rt != nil && (rt.Active || rt.Config.Enabled || rt.Config.FallbackGroupID > 0 || rt.Config.ThirdParty.Enabled) {
+	if rt != nil {
 		return rt.Config
 	}
 	return h.effectiveStrictBinding(c)
@@ -394,10 +401,7 @@ func (h *GatewayHandler) forwardStrictThirdParty(c *gin.Context, cfg config.Gate
 	if h == nil || h.gatewayService == nil {
 		return errors.New("strict third party is not configured")
 	}
-	if service.StrictThirdPartyConfigured(cfg.ThirdParty) {
-		return h.gatewayService.ForwardStrictThirdPartyConfig(c.Request.Context(), cfg.ThirdParty, c.Request.Header, body, c.Writer)
-	}
-	return h.gatewayService.ForwardStrictThirdParty(c.Request.Context(), c.Request.Header, body, c.Writer)
+	return h.gatewayService.ForwardStrictThirdPartyConfig(c.Request.Context(), cfg.ThirdParty, c.Request.Header, body, c.Writer)
 }
 
 func strictResponseStarted(c *gin.Context, streamStarted bool, writerSizeAtEntry int) bool {

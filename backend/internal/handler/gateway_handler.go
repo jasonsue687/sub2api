@@ -170,6 +170,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	body = parsedReq.Body.Bytes()
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
+
 	bindRequestedReasoningEffort(c, body, reqModel)
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
 	if policyBody, changed, err := applyAnthropicReasoningEffortPolicyForRequest(c, apiKey, body); err != nil {
@@ -225,6 +226,22 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	if rejectSystemOneOnlyPlatform(c, apiKey, h.errorResponse) {
 		return
+	}
+
+	// 获取平台：优先使用强制平台（/antigravity 路由），其次使用 composite 解析出的目标平台，否则使用分组平台
+	platform := ""
+	if forcePlatform, ok := middleware2.GetForcePlatformFromContext(c); ok {
+		platform = forcePlatform
+	} else if resolvedPlatform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
+		platform = resolvedPlatform
+	} else if apiKey.Group != nil {
+		platform = apiKey.Group.Platform
+	}
+	if platform != service.PlatformGemini {
+		if _, err := h.snapshotStrictBinding(c); err != nil {
+			h.writeStrictSessionSetupError(c, reqLog, err, false)
+			return
+		}
 	}
 
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
@@ -290,17 +307,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		UserAgent: c.GetHeader("User-Agent"),
 		APIKeyID:  apiKey.ID,
 	}
-	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
-	// 获取平台：优先使用强制平台（/antigravity 路由），其次使用 composite 解析出的目标平台，否则使用分组平台
-	platform := ""
-	if forcePlatform, ok := middleware2.GetForcePlatformFromContext(c); ok {
-		platform = forcePlatform
-	} else if resolvedPlatform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
-		platform = resolvedPlatform
-	} else if apiKey.Group != nil {
-		platform = apiKey.Group.Platform
-	}
+	sessionHash := h.gatewayService.GenerateSessionHashWithContext(c.Request.Context(), parsedReq)
 	if !h.writeStrictStickySessionHash(c, reqLog, platform, sessionHash, parsedReq.MetadataUserID) {
 		// [DEBUG-STICKY] 打印会话 hash 生成结果
 		reqLog.Info("sticky.session_hash_generated",

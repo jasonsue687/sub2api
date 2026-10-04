@@ -20,13 +20,6 @@
         </div>
         <Toggle :model-value="form.strict_session_binding_enabled" @update:model-value="updateField('strict_session_binding_enabled', $event)" />
       </div>
-      <p class="text-xs text-gray-500 dark:text-gray-400">
-        {{
-          form.strict_session_binding_source === "database"
-            ? t("admin.settings.strictSession.sourceDatabase")
-            : t("admin.settings.strictSession.sourceConfig")
-        }}
-      </p>
       <div class="grid gap-4 md:grid-cols-2">
         <div>
           <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">

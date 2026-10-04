@@ -35,7 +35,7 @@ func (h *SettingHandler) prepareStrictSessionBindingSave(ctx context.Context, pr
 }
 
 func appendStrictSessionBindingAudit(changed []string, before, after *service.SystemSettings) []string {
-	if before == nil || after == nil || !after.StrictSessionBindingOverride {
+	if before == nil || !after.HasStrictSessionBindingSettings() {
 		return changed
 	}
 	if before.StrictSessionBindingEnabled != after.StrictSessionBindingEnabled {
@@ -132,7 +132,6 @@ func applyStrictSessionBindingDTO(payload *dto.SystemSettings, view service.Stri
 	if payload == nil {
 		return
 	}
-	payload.StrictSessionBindingSource = view.Source
 	payload.StrictSessionBindingEnabled = view.Enabled
 	payload.StrictSessionSessionHeader = view.SessionHeader
 	payload.StrictSessionSameAccountRetryLimit = view.SameAccountRetryLimit

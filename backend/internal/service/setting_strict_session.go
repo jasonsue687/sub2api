@@ -2,8 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -12,8 +16,6 @@ import (
 )
 
 const (
-	// Strict Claude Messages session binding. Override=false means yaml/env still wins.
-	SettingKeyStrictSessionBindingOverride          = "strict_session_binding_override"
 	SettingKeyStrictSessionBindingEnabled           = "strict_session_binding_enabled"
 	SettingKeyStrictSessionSessionHeader            = "strict_session_session_header"
 	SettingKeyStrictSessionSameAccountRetryLimit    = "strict_session_same_account_retry_limit"
@@ -27,12 +29,13 @@ const (
 
 // strictSessionBindingState 挂在 SettingService 上，请求热路径只读这份缓存。
 type strictSessionBindingState struct {
+	strictSessionBindingMu    sync.Mutex
 	strictSessionBindingCache atomic.Value // *cachedStrictSessionBinding
 }
 
 // StrictSessionBindingSettings 是管理页保存后的严格会话配置。API key 不通过管理接口返回。
 type StrictSessionBindingSettings struct {
-	StrictSessionBindingOverride            bool
+	strictSessionBindingLoaded              bool // distinguishes a loaded/resolved config from a sparse settings update
 	StrictSessionBindingEnabled             bool
 	StrictSessionSessionHeader              string
 	StrictSessionSameAccountRetryLimit      int
@@ -45,31 +48,22 @@ type StrictSessionBindingSettings struct {
 	StrictSessionThirdPartyTimeoutSeconds   int
 }
 
+// HasStrictSessionBindingSettings reports whether this settings object carries
+// a loaded/resolved policy, rather than omitted fields in a sparse admin update.
+func (settings *SystemSettings) HasStrictSessionBindingSettings() bool {
+	return settings != nil && settings.strictSessionBindingLoaded
+}
+
 const strictSessionBindingCacheTTL = 30 * time.Second
 
 type cachedStrictSessionBinding struct {
-	override  bool
+	err       error
 	cfg       config.GatewayStrictSessionBindingConfig
 	expiresAt int64
 }
 
-func strictSessionBindingDefaultSettings() map[string]string {
-	return map[string]string{
-		SettingKeyStrictSessionBindingOverride:          "false",
-		SettingKeyStrictSessionBindingEnabled:           "false",
-		SettingKeyStrictSessionSessionHeader:            "X-Session-Id",
-		SettingKeyStrictSessionSameAccountRetryLimit:    "-1",
-		SettingKeyStrictSessionFallbackOrder:            config.StrictFallbackOrderGroupFirst,
-		SettingKeyStrictSessionFallbackGroupID:          "0",
-		SettingKeyStrictSessionThirdPartyEnabled:        "false",
-		SettingKeyStrictSessionThirdPartyBaseURL:        "",
-		SettingKeyStrictSessionThirdPartyAPIKey:         "",
-		SettingKeyStrictSessionThirdPartyTimeoutSeconds: "0",
-	}
-}
-
 func (s *SettingService) applyStrictSessionBindingUpdates(ctx context.Context, settings *SystemSettings, updates map[string]string) error {
-	if settings == nil || !settings.StrictSessionBindingOverride {
+	if settings == nil || !settings.strictSessionBindingLoaded {
 		return nil
 	}
 	cfg := settings.strictSessionBindingConfig()
@@ -90,9 +84,11 @@ func applyStrictSessionBindingSettings(result *SystemSettings, settings map[stri
 	if result == nil {
 		return
 	}
-	_, overridePresent := settings[SettingKeyStrictSessionBindingOverride]
-	result.StrictSessionBindingOverride = overridePresent && settings[SettingKeyStrictSessionBindingOverride] == "true"
-	result.StrictSessionBindingEnabled = settings[SettingKeyStrictSessionBindingEnabled] == "true"
+	result.strictSessionBindingLoaded = true
+	result.StrictSessionBindingEnabled = config.DefaultStrictSessionBindingConfig().Enabled
+	if raw, ok := settings[SettingKeyStrictSessionBindingEnabled]; ok {
+		result.StrictSessionBindingEnabled = raw == "true"
+	}
 	result.StrictSessionSessionHeader = strings.TrimSpace(settings[SettingKeyStrictSessionSessionHeader])
 	if result.StrictSessionSessionHeader == "" {
 		result.StrictSessionSessionHeader = "X-Session-Id"
@@ -140,7 +136,7 @@ func parseStrictSessionNonNegative(raw string) int {
 
 func (settings *SystemSettings) strictSessionBindingConfig() config.GatewayStrictSessionBindingConfig {
 	if settings == nil {
-		return config.GatewayStrictSessionBindingConfig{FallbackOrder: config.StrictFallbackOrderGroupFirst, SameAccountRetryLimit: -1}
+		return config.DefaultStrictSessionBindingConfig()
 	}
 	return config.GatewayStrictSessionBindingConfig{
 		Enabled:               settings.StrictSessionBindingEnabled,
@@ -157,55 +153,118 @@ func (settings *SystemSettings) strictSessionBindingConfig() config.GatewayStric
 	}
 }
 
-// StrictSessionBindingOverride 在管理员保存过后返回数据库配置。
-// 读失败时返回 false，调用方继续使用进程启动时的 yaml / 环境变量。
-func (s *SettingService) StrictSessionBindingOverride(ctx context.Context) (config.GatewayStrictSessionBindingConfig, bool) {
-	if s == nil {
-		return config.GatewayStrictSessionBindingConfig{}, false
-	}
-	if cached, ok := s.strictSessionBindingCache.Load().(*cachedStrictSessionBinding); ok && cached != nil && cached.expiresAt > time.Now().UnixNano() {
-		if !cached.override {
-			return config.GatewayStrictSessionBindingConfig{}, false
+var ErrStrictSessionConfigUnavailable = errors.New("strict session configuration unavailable")
+
+// parseStrictSessionBindingConfig distinguishes absent keys from malformed values.
+// Never turn an unreadable policy into a disabled policy or a partially defaulted one.
+func parseStrictSessionBindingConfig(stored map[string]string) (config.GatewayStrictSessionBindingConfig, error) {
+	for _, key := range []string{SettingKeyStrictSessionBindingEnabled, SettingKeyStrictSessionThirdPartyEnabled} {
+		if raw, ok := stored[key]; ok && raw != "true" && raw != "false" {
+			return config.GatewayStrictSessionBindingConfig{}, fmt.Errorf("invalid boolean setting %s", key)
 		}
-		return cached.cfg, true
 	}
-	if s.settingRepo == nil {
-		return config.GatewayStrictSessionBindingConfig{}, false
-	}
-	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
-	stored, err := s.settingRepo.GetAll(dbCtx)
-	if err != nil {
-		return config.GatewayStrictSessionBindingConfig{}, false
+	for _, key := range []string{SettingKeyStrictSessionSameAccountRetryLimit, SettingKeyStrictSessionFallbackGroupID, SettingKeyStrictSessionThirdPartyTimeoutSeconds} {
+		if raw, ok := stored[key]; ok {
+			value, err := strconv.ParseInt(raw, 10, 64)
+			minimum := int64(0)
+			if key == SettingKeyStrictSessionSameAccountRetryLimit {
+				minimum = -1
+			}
+			if err != nil || value < minimum {
+				return config.GatewayStrictSessionBindingConfig{}, fmt.Errorf("invalid integer setting %s", key)
+			}
+		}
 	}
 	parsed := &SystemSettings{}
 	applyStrictSessionBindingSettings(parsed, stored)
 	cfg := parsed.strictSessionBindingConfig()
-	s.strictSessionBindingCache.Store(&cachedStrictSessionBinding{
-		override:  parsed.StrictSessionBindingOverride,
-		cfg:       cfg,
-		expiresAt: time.Now().Add(strictSessionBindingCacheTTL).UnixNano(),
-	})
-	if !parsed.StrictSessionBindingOverride {
-		return config.GatewayStrictSessionBindingConfig{}, false
+	if err := cfg.NormalizeAndValidate(); err != nil {
+		return config.GatewayStrictSessionBindingConfig{}, err
 	}
-	return cfg, true
+	return cfg, nil
 }
 
-func (s *SettingService) storeStrictSessionBindingCache(settings *SystemSettings) {
-	if s == nil || settings == nil {
-		return
+// StrictSessionBindingConfig retains the entire last known good policy on refresh
+// failure. A cold process without a successful read must not forward Messages.
+func (s *SettingService) StrictSessionBindingConfig(ctx context.Context) (config.GatewayStrictSessionBindingConfig, error) {
+	if s == nil || s.settingRepo == nil {
+		return config.GatewayStrictSessionBindingConfig{}, ErrStrictSessionConfigUnavailable
 	}
-	s.strictSessionBindingCache.Store(&cachedStrictSessionBinding{
-		override:  settings.StrictSessionBindingOverride,
-		cfg:       settings.strictSessionBindingConfig(),
-		expiresAt: time.Now().Add(strictSessionBindingCacheTTL).UnixNano(),
-	})
+	if cached, ok := s.strictSessionBindingCache.Load().(*cachedStrictSessionBinding); ok && cached.expiresAt > time.Now().UnixNano() {
+		return cached.cfg, cached.err
+	}
+	s.strictSessionBindingMu.Lock()
+	defer s.strictSessionBindingMu.Unlock()
+	cached, _ := s.strictSessionBindingCache.Load().(*cachedStrictSessionBinding)
+	if cached != nil && cached.expiresAt > time.Now().UnixNano() {
+		return cached.cfg, cached.err
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	stored, err := s.settingRepo.GetAll(dbCtx)
+	var cfg config.GatewayStrictSessionBindingConfig
+	if err == nil {
+		cfg, err = parseStrictSessionBindingConfig(stored)
+	}
+	if err != nil {
+		slog.Warn("strict_session.config_refresh_failed", "error", err, "using_last_good", cached != nil && cached.err == nil)
+		next := &cachedStrictSessionBinding{err: ErrStrictSessionConfigUnavailable, expiresAt: time.Now().Add(5 * time.Second).UnixNano()}
+		if cached != nil && cached.err == nil {
+			next.cfg, next.err = cached.cfg, nil
+		}
+		s.strictSessionBindingCache.Store(next)
+		return next.cfg, next.err
+	}
+	s.storeStrictSessionBindingConfig(cfg)
+	return cfg, nil
+}
+
+// Caller holds strictSessionBindingMu, serializing refresh with persistence.
+func (s *SettingService) storeStrictSessionBindingConfig(cfg config.GatewayStrictSessionBindingConfig) {
+	s.strictSessionBindingCache.Store(&cachedStrictSessionBinding{cfg: cfg, expiresAt: time.Now().Add(strictSessionBindingCacheTTL).UnixNano()})
+}
+
+// Publish only the policy actually committed by SetMultiple. An unrelated or
+// failed settings save cannot replace the trusted policy with request zero values.
+func (s *SettingService) persistSystemSettings(ctx context.Context, updates map[string]string) error {
+	touched, complete := false, true
+	for _, key := range strictSessionSettingKeys {
+		_, present := updates[key]
+		touched = touched || present
+		complete = complete && present
+	}
+	if !touched {
+		return s.settingRepo.SetMultiple(ctx, updates)
+	}
+	s.strictSessionBindingMu.Lock()
+	defer s.strictSessionBindingMu.Unlock()
+	stored := updates
+	if !complete {
+		var err error
+		stored, err = s.settingRepo.GetAll(ctx)
+		if err != nil {
+			return err
+		}
+		if stored == nil {
+			stored = map[string]string{}
+		}
+		for key, value := range updates {
+			stored[key] = value
+		}
+	}
+	cfg, err := parseStrictSessionBindingConfig(stored)
+	if err != nil {
+		return err
+	}
+	if err := s.settingRepo.SetMultiple(ctx, updates); err != nil {
+		return err
+	}
+	s.storeStrictSessionBindingConfig(cfg)
+	return nil
 }
 
 // StrictSessionBindingAdminView 是管理页看到的生效配置。密钥只报告是否已配置。
 type StrictSessionBindingAdminView struct {
-	Source                   string
 	Enabled                  bool
 	SessionHeader            string
 	SameAccountRetryLimit    int
@@ -218,13 +277,9 @@ type StrictSessionBindingAdminView struct {
 }
 
 func (s *SettingService) StrictSessionBindingAdminView(stored *SystemSettings) StrictSessionBindingAdminView {
-	cfg := config.GatewayStrictSessionBindingConfig{FallbackOrder: config.StrictFallbackOrderGroupFirst, SameAccountRetryLimit: -1, SessionHeader: "X-Session-Id"}
-	source := "config"
-	if stored != nil && stored.StrictSessionBindingOverride {
+	cfg := config.DefaultStrictSessionBindingConfig()
+	if stored != nil && stored.strictSessionBindingLoaded {
 		cfg = stored.strictSessionBindingConfig()
-		source = "database"
-	} else if s != nil && s.cfg != nil {
-		cfg = s.cfg.Gateway.StrictSessionBinding
 	}
 	if strings.TrimSpace(cfg.FallbackOrder) == "" {
 		cfg.FallbackOrder = config.StrictFallbackOrderGroupFirst
@@ -233,7 +288,6 @@ func (s *SettingService) StrictSessionBindingAdminView(stored *SystemSettings) S
 		cfg.SessionHeader = "X-Session-Id"
 	}
 	return StrictSessionBindingAdminView{
-		Source:                   source,
 		Enabled:                  cfg.Enabled,
 		SessionHeader:            cfg.SessionHeader,
 		SameAccountRetryLimit:    cfg.SameAccountRetryLimit,
@@ -285,7 +339,6 @@ func strictSessionBindingUpdateMap(settings *SystemSettings) map[string]string {
 		header = "X-Session-Id"
 	}
 	updates := map[string]string{
-		SettingKeyStrictSessionBindingOverride:          strconv.FormatBool(settings.StrictSessionBindingOverride),
 		SettingKeyStrictSessionBindingEnabled:           strconv.FormatBool(settings.StrictSessionBindingEnabled),
 		SettingKeyStrictSessionSessionHeader:            header,
 		SettingKeyStrictSessionSameAccountRetryLimit:    strconv.Itoa(settings.StrictSessionSameAccountRetryLimit),
@@ -295,14 +348,12 @@ func strictSessionBindingUpdateMap(settings *SystemSettings) map[string]string {
 		SettingKeyStrictSessionThirdPartyBaseURL:        strings.TrimSpace(settings.StrictSessionThirdPartyBaseURL),
 		SettingKeyStrictSessionThirdPartyTimeoutSeconds: strconv.Itoa(settings.StrictSessionThirdPartyTimeoutSeconds),
 	}
-	if strings.TrimSpace(settings.StrictSessionThirdPartyAPIKey) != "" {
-		updates[SettingKeyStrictSessionThirdPartyAPIKey] = settings.StrictSessionThirdPartyAPIKey
-	}
+	updates[SettingKeyStrictSessionThirdPartyAPIKey] = settings.StrictSessionThirdPartyAPIKey
 	return updates
 }
 
 func strictSessionBindingUpdates(settings *SystemSettings) map[string]string {
-	if settings == nil || !settings.StrictSessionBindingOverride {
+	if settings == nil || !settings.strictSessionBindingLoaded {
 		return nil
 	}
 	return strictSessionBindingUpdateMap(settings)
@@ -323,17 +374,11 @@ type StrictSessionBindingPatch struct {
 }
 
 // ResolveStrictSessionBindingSave 把本次提交合并到当前生效配置上。
-// 空密钥保留已保存或 yaml 中的密钥。调用方提交任一字段后，数据库成为生效来源。
+// 空密钥保留数据库中的密钥。
 func (s *SettingService) ResolveStrictSessionBindingSave(ctx context.Context, previous *SystemSettings, patch StrictSessionBindingPatch) (config.GatewayStrictSessionBindingConfig, error) {
-	cfg := config.GatewayStrictSessionBindingConfig{
-		FallbackOrder:         config.StrictFallbackOrderGroupFirst,
-		SameAccountRetryLimit: -1,
-		SessionHeader:         "X-Session-Id",
-	}
-	if previous != nil && previous.StrictSessionBindingOverride {
+	cfg := config.DefaultStrictSessionBindingConfig()
+	if previous != nil && previous.strictSessionBindingLoaded {
 		cfg = previous.strictSessionBindingConfig()
-	} else if s != nil && s.cfg != nil {
-		cfg = s.cfg.Gateway.StrictSessionBinding
 	}
 	if patch.Enabled != nil {
 		cfg.Enabled = *patch.Enabled
@@ -380,7 +425,7 @@ func applyResolvedStrictSessionBinding(settings *SystemSettings, cfg config.Gate
 	if settings == nil {
 		return
 	}
-	settings.StrictSessionBindingOverride = true
+	settings.strictSessionBindingLoaded = true
 	settings.StrictSessionBindingEnabled = cfg.Enabled
 	settings.StrictSessionSessionHeader = cfg.SessionHeader
 	settings.StrictSessionSameAccountRetryLimit = cfg.SameAccountRetryLimit
@@ -394,7 +439,6 @@ func applyResolvedStrictSessionBinding(settings *SystemSettings, cfg config.Gate
 }
 
 var strictSessionSettingKeys = []string{
-	SettingKeyStrictSessionBindingOverride,
 	SettingKeyStrictSessionBindingEnabled,
 	SettingKeyStrictSessionSessionHeader,
 	SettingKeyStrictSessionSameAccountRetryLimit,

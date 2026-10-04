@@ -28,14 +28,14 @@ describe('StrictSessionBindingSettings', () => {
     await wrapper.setProps({ form: latestForm() })
 
     await wrapper.findAll('[role="switch"]')[0].trigger('click')
-    expect(initial.strict_session_binding_enabled).toBe(false)
-    expect(latestForm().strict_session_binding_enabled).toBe(true)
+    expect(initial.strict_session_binding_enabled).toBe(true)
+    expect(latestForm().strict_session_binding_enabled).toBe(false)
     await wrapper.setProps({ form: latestForm() })
 
     await wrapper.get('input[type="number"][min="-1"]').setValue('2')
     const payload = strictSessionBindingUpdatePayload(latestForm())
     expect(payload.strict_session_same_account_retry_limit).toBe(2)
-    expect(payload.strict_session_binding_enabled).toBe(true)
+    expect(payload.strict_session_binding_enabled).toBe(false)
     expect(payload.strict_session_session_header).toBe('X-Conversation-Id')
     expect(payload).not.toHaveProperty('strict_session_end_user_header')
     expect(payload).not.toHaveProperty('strict_session_end_user_header_trusted')
