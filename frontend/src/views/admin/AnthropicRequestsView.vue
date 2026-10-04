@@ -9,6 +9,7 @@
           </div>
           <p class="text-sm text-gray-500 dark:text-gray-400">{{ tr('description') }}</p>
         </div>
+        <button type="button" class="btn btn-secondary btn-sm" data-testid="outbound-audit" @click="router.push({ name: 'AdminAnthropicOutboundAudit', query: accountId > 0 ? { account_id: String(accountId) } : {} })">{{ tr('outboundAudit') }}</button>
         <button type="button" class="btn btn-secondary btn-sm" data-testid="export-page" :disabled="!data?.records.length" @click="exportPage">{{ tr('exportPage') }}</button>
       </header>
 
@@ -84,6 +85,7 @@
                 <th class="whitespace-nowrap px-2.5 py-3 font-medium">{{ tr('colModel') }}</th>
                 <th class="whitespace-nowrap px-2.5 py-3 font-medium">{{ tr('colStream') }}</th>
                 <th class="whitespace-nowrap px-2.5 py-3 font-medium">{{ tr('colStatus') }}</th>
+                <th class="whitespace-nowrap px-2.5 py-3 font-medium">{{ tr('outboundConsistency') }}</th>
                 <th class="whitespace-nowrap px-2.5 py-3 font-medium">{{ tr('colAccount') }}</th>
                 <th class="whitespace-nowrap px-2.5 py-3 text-center font-medium">{{ tr('colAttempts') }}</th>
                 <th class="whitespace-nowrap px-2.5 py-3 text-right font-medium">{{ tr('colDuration') }}</th>
@@ -100,7 +102,7 @@
                 <td class="px-2.5 py-2.5">
                   <span class="font-mono text-xs text-gray-700 dark:text-gray-200">{{ row.endpoint || tr('dash') }}</span>
                   <span v-if="!row.has_inbound" data-testid="no-inbound" class="mt-1 block"><span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{{ tr('noInbound') }}</span></span>
-                  <span v-if="!row.has_outbound" data-testid="no-outbound" class="mt-1 block"><span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{{ tr('noOutbound') }}</span></span>
+                  <span v-if="!row.has_outbound" data-testid="no-outbound" class="mt-1 block"><span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{{ tr(row.attempt_count > 0 ? 'outboundNotCaptured' : 'noOutbound') }}</span></span>
                 </td>
                 <td class="px-2.5 py-2.5 font-mono text-xs leading-5">
                   <span>{{ row.inbound_model || tr('dash') }} <span class="text-gray-400">→</span></span>
@@ -108,6 +110,7 @@
                 </td>
                 <td class="px-2.5 py-2.5 text-xs" :data-stream="row.stream" :class="row.stream ? 'text-emerald-600' : 'text-gray-400'">{{ tr(row.stream ? 'yes' : 'no') }}</td>
                 <td class="px-2.5 py-2.5"><span data-testid="status" class="inline-flex rounded-full px-2.5 py-0.5 font-mono text-xs font-medium" :class="statusClass(row.status)">{{ row.status || tr('dash') }}</span></td>
+                <td class="px-2.5 py-2.5" data-testid="outbound-consistency"><ConsistencyBadge v-if="row.has_outbound || row.attempt_count > 0" :state="row.consistency" /><span v-else class="text-xs text-gray-400">{{ tr('noOutbound') }}</span></td>
                 <td class="px-2.5 py-2.5 font-mono text-xs">{{ row.account_name || tr('dash') }}</td>
                 <td class="px-2.5 py-2.5 text-center">
                   <span v-if="row.attempt_count > 1" data-testid="attempt-count" :data-attempts="row.attempt_count" class="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 ring-1 ring-amber-300">{{ tr('attemptTimes', { count: row.attempt_count }) }}</span>
@@ -115,7 +118,7 @@
                 </td>
                 <td class="px-2.5 py-2.5 text-right font-mono text-xs tabular-nums">{{ formatDuration(row.duration_ms) }}</td>
               </tr>
-              <tr v-if="!data.records.length"><td colspan="10" class="p-10 text-center text-gray-500">{{ tr('empty') }}</td></tr>
+              <tr v-if="!data.records.length"><td colspan="11" class="p-10 text-center text-gray-500">{{ tr('empty') }}</td></tr>
             </tbody>
           </table>
         </div>
@@ -136,6 +139,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import ConsistencyBadge from '@/components/anthropic/ConsistencyBadge.vue'
 import { listAnthropicSessions, type AnthropicSessionList, type AnthropicSessionRow } from '@/api/admin/anthropicRequests'
 import { formatDuration, shortId, splitLocalTime } from '@/utils/anthropicRequestDiff'
 

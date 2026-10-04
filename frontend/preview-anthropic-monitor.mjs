@@ -40,7 +40,7 @@ const capture = (patch) => ({
 const api = resolve(temp, 'api.ts')
 await writeFile(api, `
 const rows = ${JSON.stringify(rows)}
-export async function listAnthropicRequests() { return { records: [], summary: {}, variants: [], total: 0, page: 1, page_size: 50, account_id: 0, start_time: '', end_time: '', collection_enabled: true, sink_health: { queue_capacity: 512, queue_depth: 0, dropped_count: 0, write_failed_count: 0, written_count: 1, avg_write_delay_ms: 0, last_error: '' } } }
+export async function listAnthropicRequests(query) { return { records: [{ id: 123, created_at: rows[0].created_at, request_id: 'demo-history', client_request_id: 'demo-client', audit: { schema: 1, attempt_id: 'demo-attempt', started_at: rows[0].created_at, endpoint: '/v1/messages', origin: { source: 'gateway', subscription: true, mimic: false }, headers: { 'user-agent': 'claude-cli/2.1.283 (external, cli)' }, parameters: { model: 'claude-sonnet-4-5', stream: false }, body_state: 'parsed', cc_entrypoint: 'local-agent', cc_version: '2.1.283', consistency: 'mismatch', issues: ['entrypoint_mismatch'], status: 200, headers_ms: 710 } }], summary: { attempts: 1, correlated_requests: 1, uncorrelated_attempts: 0, matched: 0, mismatched: 1, unknown: 0, http_failures: 0, transport_errors: 0, identity_variants: 1, parameter_variants: 1 }, variants: [], total: 1, page: 1, page_size: 50, account_id: query.account_id, start_time: query.start_time, end_time: query.end_time, collection_enabled: true, sink_health: { queue_capacity: 512, queue_depth: 0, dropped_count: 0, write_failed_count: 0, written_count: 1, avg_write_delay_ms: 0, last_error: '' } } }
 export async function listAnthropicSessions(query) {
   let records = rows
   if (query.only_multi) records = records.filter(row => row.attempt_count > 1)
@@ -70,17 +70,20 @@ const entry = resolve(temp, 'entry.ts')
 await writeFile(entry, `import {createApp, h} from 'vue';import {createI18n} from 'vue-i18n';import {createRouter,createWebHistory,RouterView} from 'vue-router';
 import List from '${fsURL(resolve(root, 'src/views/admin/AnthropicRequestsView.vue'))}';
 import Detail from '${fsURL(resolve(root, 'src/views/admin/AnthropicRequestDetailView.vue'))}';
+import Outbound from '${fsURL(resolve(root, 'src/views/admin/AnthropicOutboundAuditView.vue'))}';
+import outboundZh from '${fsURL(resolve(root, 'src/i18n/locales/zh/admin/anthropicOutbound.ts'))}';
 import zh from '${fsURL(resolve(root, 'src/i18n/locales/zh/admin/anthropicRequests.ts'))}';
 import '${fsURL(resolve(root, 'src/style.css'))}';
 const router=createRouter({history:createWebHistory(),routes:[
   {path:'/',name:'AdminAnthropicRequests',component:List},
-  {path:'/detail/:clientRequestId',name:'AdminAnthropicRequestDetail',component:Detail}
+  {path:'/detail/:clientRequestId',name:'AdminAnthropicRequestDetail',component:Detail},
+  {path:'/outbound',name:'AdminAnthropicOutboundAudit',component:Outbound}
 ]});
-createApp({render:()=>h(RouterView)}).use(router).use(createI18n({legacy:false,locale:'zh',messages:{zh:{admin:zh}}})).mount('#app');`)
+createApp({render:()=>h(RouterView)}).use(router).use(createI18n({legacy:false,locale:'zh',messages:{zh:{admin:{...zh,...outboundZh}}}})).mount('#app');`)
 const server = await createServer({
   configFile: false, root, plugins: [vue(), { name: 'preview-entry', configureServer(server) {
     server.middlewares.use((req, res, next) => {
-      if (req.url !== '/' && !req.url.startsWith('/detail/')) return next()
+      if (req.url !== '/' && !req.url.startsWith('/detail/') && !req.url.startsWith('/outbound')) return next()
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
       res.end(`<!doctype html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Anthropic 请求监控 · 本地演示</title></head><body><div id="app"></div><script type="module" src="${fsURL(entry)}"></script></body></html>`)
     })

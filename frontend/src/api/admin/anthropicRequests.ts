@@ -133,6 +133,13 @@ export interface AnthropicSessionQuery {
   model?: string
   q?: string
 }
+export interface AnthropicCaptureSummary {
+  consistency?: string
+  issues?: string[]
+  cc_version?: string
+  cc_entrypoint?: string
+  [key: string]: unknown
+}
 export interface AnthropicCapture {
   direction: string
   client_request_id: string
@@ -159,7 +166,7 @@ export interface AnthropicCapture {
   headers?: unknown
   body?: unknown
   body_state: string
-  summary?: unknown
+  summary?: AnthropicCaptureSummary
   consistency: string
   truncated: boolean
   original_bytes: number

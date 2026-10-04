@@ -421,6 +421,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, requiresAdmin: true, title: 'Anthropic Requests', titleKey: 'admin.anthropicRequests.title' }
   },
   {
+    path: '/admin/anthropic-outbound',
+    name: 'AdminAnthropicOutboundAudit',
+    component: () => import('@/views/admin/AnthropicOutboundAuditView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Outbound consistency', titleKey: 'admin.anthropicOutbound.title' }
+  },
+  {
     path: '/admin/anthropic-requests/:clientRequestId',
     name: 'AdminAnthropicRequestDetail',
     component: () => import('@/views/admin/AnthropicRequestDetailView.vue'),

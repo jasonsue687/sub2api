@@ -13,7 +13,7 @@ export default {
     status: 'Status',
     allStatus: 'All statuses',
     onlyFailed: 'Failed only',
-    onlyMismatch: 'Mismatched only',
+    onlyMismatch: 'Outbound mismatches only',
     model: 'Model',
     allModels: 'All models',
     onlyMulti: 'Multiple attempts only',
@@ -97,6 +97,12 @@ export default {
     truncated: 'The redacted body exceeded 64KiB. Only a truncated preview is stored.',
     noOutboundBody: 'This inbound request has no outbound attempt.',
     footer: 'Inbound capture omits messages, tools, and tool_choice and masks credentials; other parameters, including system, retain their original values. Outbound prompts and tools follow existing redaction rules. TLS fingerprints and headers added after outbound capture are not recorded.',
+    outboundAudit: 'Outbound consistency / history',
+    outboundConsistency: 'Outbound consistency',
+    allOutboundAttempts: 'All outbound attempts',
+    selectedOutboundAttempt: 'Viewing outbound attempt #{seq}',
+    outboundNotCaptured: 'Outbound was attempted, but no capture is available',
+    outboundRuleHint: 'Checks outbound UA against billing entrypoint and version only. Inbound results are excluded. Any outbound mismatch takes precedence; unknown or missing captures prevent confirming that all attempts matched.',
     dash: '—'
   }
 }

@@ -84,6 +84,27 @@ describe('Anthropic request detail', () => {
     expect(wrapper.get('[data-testid="attempt-chips"]').text()).toContain('reason_initial')
   })
 
+  it('displays selected outbound evidence independently of inbound and other attempts', async () => {
+    getSession.mockResolvedValue(detail({
+      session: { ...detail().session, attempt_count: 2, consistency: 'mismatch' },
+      inbound: capture({ direction: 'inbound', consistency: 'mismatch', summary: { issues: ['version_mismatch'] } }),
+      attempts: [
+        capture({ attempt_seq: 1, status: 429, consistency: 'mismatch', summary: { issues: ['entrypoint_mismatch'], cc_entrypoint: 'local-agent', cc_version: '2.1.283' } }),
+        capture({ attempt_seq: 2, consistency: 'matched', headers: [{ name: 'User-Agent', value: 'claude-cli/2.1.283 (external, cli)' }], summary: { issues: [], cc_entrypoint: 'cli', cc_version: '2.1.283' } })
+      ]
+    }))
+    const wrapper = render(); await flushPromises()
+    expect(wrapper.get('[data-testid="all-outbound-check"] [data-consistency]').attributes('data-consistency')).toBe('mismatch')
+    expect(wrapper.get('[data-testid="selected-outbound-check"] [data-consistency]').attributes('data-consistency')).toBe('matched')
+    expect(wrapper.get('[data-testid="outbound-ua"]').text()).toBe('claude-cli/2.1.283 (external, cli)')
+    expect(wrapper.get('[data-testid="outbound-check"]').text()).not.toContain('issue_version_mismatch')
+    await wrapper.get('[data-testid="attempt-1"]').trigger('click')
+    expect(wrapper.get('[data-testid="selected-outbound-check"]').text()).toContain('issue_entrypoint_mismatch')
+    expect(wrapper.get('[data-testid="selected-outbound-check"] [data-consistency]').attributes('data-consistency')).toBe('mismatch')
+    await wrapper.get('[data-testid="outbound-audit"]').trigger('click')
+    expect(push).toHaveBeenCalledWith({ name: 'AdminAnthropicOutboundAudit', query: { account_id: '2' } })
+  })
+
   it('does not treat a missing inbound record as a field-by-field deletion', async () => {
     getSession.mockResolvedValue(detail({ inbound: null, session: { ...detail().session, has_inbound: false } }))
     const wrapper = render(); await flushPromises()
