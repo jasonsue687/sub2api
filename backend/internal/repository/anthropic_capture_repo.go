@@ -116,7 +116,12 @@ grouped AS (
     COALESCE(max(i.api_key_id), max(k.api_key_id), 0) AS api_key_id,
     COALESCE(NULLIF(max(i.api_key_name), ''), max(k.api_key_name), '') AS api_key_name,
     COALESCE(NULLIF(max(i.username), ''), max(k.username), '') AS username,
-    COALESCE(NULLIF(max(i.consistency), ''), max(k.consistency) FILTER (WHERE k.consistency <> ''), '') AS consistency,
+    CASE
+      WHEN bool_or(k.consistency = 'mismatch') THEN 'mismatch'
+      WHEN bool_or(k.consistency = 'unknown' OR k.consistency = '') THEN 'unknown'
+      WHEN bool_or(k.consistency = 'matched') THEN 'matched'
+      ELSE 'unknown'
+    END AS consistency,
     bool_or(k.truncated) AS truncated
   FROM keyed k
   LEFT JOIN inbound i ON i.gkey = k.gkey
@@ -274,6 +279,12 @@ func (r *opsRepository) GetAnthropicSession(ctx context.Context, clientRequestID
 
 func (r *opsRepository) deleteMatchingCaptures(ctx context.Context, filter *service.OpsSystemLogCleanupFilter) {
 	if r == nil || r.db == nil || filter == nil {
+		return
+	}
+	// Captures do not have these log fields. Dropping one of these predicates
+	// would broaden a filtered cleanup and delete unrelated request records.
+	if strings.TrimSpace(filter.Platform) != "" || strings.TrimSpace(filter.Level) != "" ||
+		strings.TrimSpace(filter.Host) != "" || strings.TrimSpace(filter.Query) != "" {
 		return
 	}
 	component := strings.TrimSpace(filter.Component)

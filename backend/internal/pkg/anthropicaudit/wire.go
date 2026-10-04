@@ -21,12 +21,12 @@ import (
 const (
 	DirectionInbound  = "inbound"
 	DirectionOutbound = "outbound"
-	// CaptureQueueCapacity bounds in-flight redacted captures. Overflow is dropped.
+	// CaptureQueueCapacity bounds in-flight capture jobs. Overflow is dropped.
 	CaptureQueueCapacity = 512
 )
 
 // Record is one persisted inbound request or outbound attempt.
-// Bodies and headers are redacted before they reach the queue.
+// Bodies and headers are filtered by the worker before persistence.
 type Record struct {
 	Direction          string          `json:"direction"`
 	ClientRequestID    string          `json:"client_request_id"`
@@ -222,14 +222,19 @@ func CaptureInbound(req *http.Request, body []byte, caller InboundCaller) (*http
 // PrepareOutbound copies the wire request when the existing outbound audit
 // accepted it. Finish is safe on a nil draft.
 func PrepareOutbound(req *http.Request, accountID int64, enabled bool) *outboundDraft {
-	if !enabled || req == nil {
+	if req == nil {
+		return nil
+	}
+	// Inbound account filtering and attempt counts must not depend on whether
+	// the outbound audit accepts this account or destination.
+	seq, reason, switches := takeAttempt(req.Context(), accountID)
+	if !enabled {
 		return nil
 	}
 	draft := &outboundDraft{accountID: accountID, started: time.Now(), headers: cloneHeader(req.Header)}
 	if req.URL != nil {
 		draft.endpoint = req.URL.Path
 	}
-	seq, reason, switches := takeAttempt(req.Context(), accountID)
 	draft.seq = seq
 	draft.reason = reason
 	draft.switches = switches
@@ -322,8 +327,20 @@ func enqueue(job captureJob) {
 
 func finishJob(job captureJob) Record {
 	rec := job.record
-	body, state, truncated, original := redactOrKeep(job.body, rec.BodyState, rec.OriginalBytes)
-	headers, headerTruncated := RedactHeaders(job.headers)
+	var body, headers []byte
+	var state string
+	var truncated, headerTruncated bool
+	var original int
+	if rec.Direction == DirectionInbound && rec.BodyState == "" {
+		body, state, truncated, original = CaptureInboundBody(job.body)
+	} else {
+		body, state, truncated, original = redactOrKeep(job.body, rec.BodyState, rec.OriginalBytes)
+	}
+	if rec.Direction == DirectionInbound {
+		headers, headerTruncated = CaptureInboundHeaders(job.headers)
+	} else {
+		headers, headerTruncated = RedactHeaders(job.headers)
+	}
 	rec.Headers = headers
 	rec.Body = body
 	if state != "" {
@@ -334,7 +351,7 @@ func finishJob(job captureJob) Record {
 	}
 	rec.Truncated = truncated || headerTruncated
 	if len(job.body) > 0 && state == "parsed" {
-		summary := summarizeWire(job.headers, job.body)
+		summary := summarizeWire(job.headers, job.body, rec.Direction == DirectionInbound)
 		rec.Summary = summary.raw
 		rec.Consistency = summary.consistency
 		if rec.Model == "" {
@@ -375,7 +392,7 @@ type wireSummary struct {
 	stream      *bool
 }
 
-func summarizeWire(headers http.Header, body []byte) wireSummary {
+func summarizeWire(headers http.Header, body []byte, inbound bool) wireSummary {
 	req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
 	if err != nil {
 		return wireSummary{}
@@ -395,6 +412,11 @@ func summarizeWire(headers http.Header, body []byte) wireSummary {
 		}
 	}
 	snap.readBody(req)
+	if inbound {
+		delete(snap.Parameters, "messages_count")
+		delete(snap.Parameters, "tools_count")
+		delete(snap.Parameters, "tool_choice.type")
+	}
 	snap.checkConsistency()
 	identityHeaders := make(map[string]string, len(snap.Headers))
 	for key, value := range snap.Headers {

@@ -2,7 +2,7 @@ export default {
   anthropicRequests: {
     title: 'Anthropic requests',
     crumb: 'Inbound / outbound comparison',
-    description: 'Each row is one inbound request. Open it to compare the original client request with what was sent to Anthropic. Prompts are redacted.',
+    description: 'Each row is one inbound request. Compare original client parameters with the outbound capture. Inbound messages, tools, and tool_choice are omitted; credentials are masked.',
     window: 'Time range',
     hour: 'Last hour',
     day: 'Last 24 hours',
@@ -59,11 +59,11 @@ export default {
     legendAdd: 'Added outbound',
     legendDel: 'Removed outbound',
     legendChg: 'Rewritten',
-    legendRedacted: '[omitted …] prompts and secrets are redacted',
+    legendRedacted: '[OMITTED] field content omitted · *** credentials masked',
     onlyDiff: 'Differences only',
     noDiff: 'No differences.',
     inboundTitle: 'Inbound request',
-    inboundHint: 'Client → Sub2API · captured before rewrite',
+    inboundHint: 'Any client → Sub2API · captured before parameter rewriting',
     outboundTitle: 'Outbound request (to Anthropic)',
     outboundHint: 'Sub2API → api.anthropic.com{endpoint} · captured before send · account {account}',
     headers: 'HEADERS',
@@ -96,7 +96,7 @@ export default {
     bodyUnavailable: 'Body was not stored ({state}).',
     truncated: 'The redacted body exceeded 64KiB. Only a truncated preview is stored.',
     noOutboundBody: 'This inbound request has no outbound attempt.',
-    footer: 'Headers added by the HTTP client after the capture point (Host, Content-Length, and similar) and TLS fingerprints are not recorded. Tool names, descriptions, and schemas are not recorded.',
+    footer: 'Inbound capture omits messages, tools, and tool_choice and masks credentials; other parameters, including system, retain their original values. Outbound prompts and tools follow existing redaction rules. TLS fingerprints and headers added after outbound capture are not recorded.',
     dash: '—'
   }
 }

@@ -2,7 +2,7 @@ export default {
   anthropicRequests: {
     title: 'Anthropic 请求监控',
     crumb: '入站 / 出站请求对照',
-    description: '每行一个入站请求；点开详情可对照客户端原始请求与实际发往 Anthropic 的出站请求（提示词已脱敏）。',
+    description: '每行一个入站请求；点开详情可对照客户端原始参数与发往 Anthropic 的出站记录。入站省略 messages、tools、tool_choice，凭据掩码。',
     window: '时间范围',
     hour: '最近 1 小时',
     day: '最近 24 小时',
@@ -59,11 +59,11 @@ export default {
     legendAdd: '出站新增',
     legendDel: '出站移除',
     legendChg: '被改写',
-    legendRedacted: '[已省略 …] 提示词/密钥已脱敏',
+    legendRedacted: '[OMITTED] 字段内容已省略 · *** 凭据已掩码',
     onlyDiff: '仅显示差异',
     noDiff: '两侧没有差异。',
     inboundTitle: '入站请求',
-    inboundHint: '客户端 → Sub2API · 改写前采集',
+    inboundHint: '任意客户端 → Sub2API · 参数改写前采集',
     outboundTitle: '出站请求（发往 Anthropic）',
     outboundHint: 'Sub2API → api.anthropic.com{endpoint} · 发送前采集 · 账号 {account}',
     headers: 'HEADERS',
@@ -96,7 +96,7 @@ export default {
     bodyUnavailable: '正文未采集（{state}）。',
     truncated: '脱敏后的正文超过 64KiB，只保留截断预览。',
     noOutboundBody: '这次入站没有对应的出站请求。',
-    footer: '说明：出站采集点之后由 HTTP 库自动补充的头（Host、Content-Length 等）、TLS 指纹不在记录范围内。工具名称、描述与 schema 不记录。',
+    footer: '入站仅省略 messages、tools、tool_choice，凭据掩码；system 等其他参数保留原值。出站沿用提示词和工具脱敏规则。采集不包含 TLS 指纹及出站采集点之后自动补充的请求头。',
     dash: '—'
   }
 }

@@ -102,8 +102,11 @@ func TestInboundCopiesBodyBeforeRewriteAndLinksAttempts(t *testing.T) {
 			t.Fatal("timed out waiting for records")
 		}
 	}
-	if strings.Contains(string(inbound.Body), "raw prompt") || strings.Contains(string(inbound.Body), "rewritten-model") || strings.Contains(string(inbound.Body), "sk-secret") {
-		t.Fatalf("inbound leaked or saw rewrite: %s", inbound.Body)
+	if strings.Contains(string(inbound.Body), "rewritten-model") || strings.Contains(string(inbound.Body), "sk-secret") {
+		t.Fatalf("inbound leaked a credential or saw rewrite: %s", inbound.Body)
+	}
+	if gjson.GetBytes(inbound.Body, "system").String() != "raw prompt" || gjson.GetBytes(inbound.Body, "messages").String() != OmittedInboundValue {
+		t.Fatalf("original parameters or omission marker missing: %s", inbound.Body)
 	}
 	if gjson.GetBytes(inbound.Body, "model").String() != "claude-sonnet-4-5" {
 		t.Fatalf("inbound model %s", inbound.Body)
@@ -150,7 +153,7 @@ func TestInboundDisabledAndWhitelist(t *testing.T) {
 	if done == nil {
 		t.Fatal("expected done")
 	}
-	takeAttempt(deny.Context(), 99)
+	PrepareOutbound(deny, 99, false)
 	done(400)
 	select {
 	case record := <-got:

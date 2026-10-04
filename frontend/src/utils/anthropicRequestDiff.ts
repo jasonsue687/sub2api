@@ -65,7 +65,9 @@ export function alignHeaders(left: unknown, right: unknown): AlignedLine[] {
       if (item && typeof item === 'object' && 'name' in item) {
         const name = String((item as { name: unknown }).name)
         const raw = (item as { value?: unknown }).value
-        map.set(name, raw == null ? '' : String(raw))
+        const key = matchingKey(map, name)
+        const text = raw == null ? '' : String(raw)
+        map.set(key, map.has(key) ? map.get(key) + ', ' + text : text)
       }
     }
     return map

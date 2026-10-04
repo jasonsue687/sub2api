@@ -109,6 +109,9 @@ func redactBlock(set func(string, []byte), path string, block gjson.Result) {
 	if !block.IsObject() {
 		return
 	}
+	if citations := block.Get("citations"); citations.Exists() {
+		set(path+".citations", textPlaceholder(citations.Raw, true))
+	}
 	switch block.Get("type").String() {
 	case "text":
 		if text := block.Get("text"); text.Type == gjson.String && !strings.HasPrefix(text.String(), billingPrefix) {
@@ -125,7 +128,7 @@ func redactBlock(set func(string, []byte), path string, block gjson.Result) {
 		if data := block.Get("data"); data.Exists() {
 			set(path+".data", textPlaceholder(data.Raw, true))
 		}
-	case "tool_use":
+	case "tool_use", "server_tool_use":
 		if name := block.Get("name"); name.Exists() {
 			set(path+".name", namePlaceholder(name.String()))
 		}
@@ -137,7 +140,15 @@ func redactBlock(set func(string, []byte), path string, block gjson.Result) {
 			redactContent(set, path+".content", content)
 		}
 	case "image", "document":
+		for _, key := range []string{"title", "context"} {
+			if value := block.Get(key); value.Exists() {
+				set(path+"."+key, textPlaceholder(value.Raw, true))
+			}
+		}
 		if src := block.Get("source"); src.IsObject() {
+			if content := src.Get("content"); content.Exists() {
+				set(path+".source.content", textPlaceholder(content.Raw, true))
+			}
 			if data := src.Get("data"); data.Exists() {
 				set(path+".source.data", textPlaceholder(data.Raw, true))
 			}

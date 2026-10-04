@@ -13,6 +13,16 @@ describe('anthropic request diff', () => {
     expect(formatDuration(20)).toBe('0.02s')
   })
 
+  it('displays every repeated header value and matches names case insensitively', () => {
+    const rows = alignHeaders(
+      [{ name: 'X-Custom', value: 'one' }, { name: 'x-custom', value: 'two' }],
+      [{ name: 'x-custom', value: 'one, two' }]
+    )
+    expect(rows).toEqual([
+      { id: 'header.x-custom', indent: 0, left: 'X-Custom: one, two', right: 'X-Custom: one, two', kind: 'same' }
+    ])
+  })
+
   it('shows redacted prompts and tool names without recording the name', () => {
     const rows = alignDocuments(
       { messages: [{ content: { _redacted: true, len: 12, sha256: 'abcd1234ffff' } }], tool_choice: { name: { _redacted: true, len: 4 } } },

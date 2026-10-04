@@ -157,9 +157,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
-	if finishInbound := beginAnthropicInbound(c, apiKey, subject.UserID, body); finishInbound != nil {
-		defer finishInbound()
-	}
 
 	setOpsRequestContext(c, "", false)
 
@@ -2166,9 +2163,6 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	if len(body) == 0 {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
-	}
-	if finishInbound := beginAnthropicInbound(c, apiKey, apiKey.UserID, body); finishInbound != nil {
-		defer finishInbound()
 	}
 
 	setOpsRequestContext(c, "", false)
