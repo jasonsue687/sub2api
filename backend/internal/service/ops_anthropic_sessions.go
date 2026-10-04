@@ -222,7 +222,7 @@ func sessionRowFromDetail(detail *AnthropicSessionDetail) AnthropicSessionRow {
 		if len(detail.Attempts) > row.AttemptCount {
 			row.AttemptCount = len(detail.Attempts)
 		}
-		row.HasOutbound = row.AttemptCount > 0
+		row.HasOutbound = len(detail.Attempts) > 0
 	}
 	chosen := chooseAttempt(detail.Attempts)
 	if chosen != nil {
@@ -243,6 +243,21 @@ func sessionRowFromDetail(detail *AnthropicSessionDetail) AnthropicSessionRow {
 	}
 	if row.ClientRequestID == "" && len(detail.Attempts) > 0 {
 		row.ClientRequestID = detail.Attempts[0].ClientRequestID
+	}
+	// The session check describes all recorded outbound attempts, never inbound.
+	// Missing captures cannot establish that every outbound attempt matched.
+	row.Consistency = "matched"
+	if len(detail.Attempts) == 0 || row.AttemptCount > len(detail.Attempts) {
+		row.Consistency = "unknown"
+	}
+	for _, attempt := range detail.Attempts {
+		if attempt.Consistency == "mismatch" {
+			row.Consistency = "mismatch"
+			break
+		}
+		if attempt.Consistency != "matched" {
+			row.Consistency = "unknown"
+		}
 	}
 	return row
 }

@@ -53,7 +53,12 @@ jobs:
       - name: Frontend lint, types and critical tests
         run: make test-frontend
       - name: Anthropic monitor tests
-        run: pnpm --dir frontend exec vitest run src/views/admin/__tests__/AnthropicRequestsView.spec.ts
+        run: >-
+          pnpm --dir frontend exec vitest run
+          src/views/admin/__tests__/AnthropicRequestsView.spec.ts
+          src/views/admin/__tests__/AnthropicRequestDetailView.spec.ts
+          src/views/admin/__tests__/AnthropicOutboundAuditView.spec.ts
+          src/utils/__tests__/anthropicRequestDiff.spec.ts
 
   image:
     needs: verify

@@ -31,6 +31,25 @@
           <div><p class="text-xs text-gray-500">{{ tr('metaAttempts') }}</p><p class="mt-1 text-sm">{{ session.attempt_count }}</p></div>
         </section>
 
+        <section class="card space-y-3 p-5" data-testid="outbound-check">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h2 class="text-sm font-semibold">{{ tr('outboundConsistency') }}</h2>
+            <button type="button" class="btn btn-secondary btn-sm" data-testid="outbound-audit" @click="router.push({ name: 'AdminAnthropicOutboundAudit', query: selected?.account_id ? { account_id: String(selected.account_id) } : {} })">{{ tr('outboundAudit') }}</button>
+          </div>
+          <div v-if="session.attempt_count > 0" class="flex items-center gap-2 text-xs" data-testid="all-outbound-check"><span>{{ tr('allOutboundAttempts') }}</span><ConsistencyBadge :state="session.consistency" /></div>
+          <template v-if="selected">
+            <p class="text-xs text-gray-500">{{ tr('selectedOutboundAttempt', { seq: selected.attempt_seq }) }}</p>
+            <ConsistencyBadge data-testid="selected-outbound-check" :state="selected.consistency" :issues="selected.summary?.issues" />
+            <dl class="grid gap-3 text-xs md:grid-cols-3">
+              <div><dt class="text-gray-500">User-Agent</dt><dd class="mt-1 break-all font-mono" data-testid="outbound-ua">{{ outboundUA || tr('dash') }}</dd></div>
+              <div><dt class="text-gray-500">cc_entrypoint</dt><dd class="mt-1 font-mono">{{ selected.summary?.cc_entrypoint || tr('dash') }}</dd></div>
+              <div><dt class="text-gray-500">cc_version</dt><dd class="mt-1 font-mono">{{ selected.summary?.cc_version || tr('dash') }}</dd></div>
+            </dl>
+          </template>
+          <p v-else class="text-xs text-gray-500">{{ tr(session.attempt_count > 0 ? 'outboundNotCaptured' : 'noOutbound') }}</p>
+          <p class="text-xs text-gray-500">{{ tr('outboundRuleHint') }}</p>
+        </section>
+
         <div class="flex flex-wrap items-center gap-3 text-xs text-gray-600">
           <span class="inline-flex items-center gap-1"><span class="h-3 w-1 rounded bg-emerald-500" />{{ tr('legendAdd') }}</span>
           <span class="inline-flex items-center gap-1"><span class="h-3 w-1 rounded bg-red-500" />{{ tr('legendDel') }}</span>
@@ -82,7 +101,7 @@
               <p v-if="selected.body_state && selected.body_state !== 'parsed'" class="text-gray-400">{{ tr('bodyUnavailable', { state: selected.body_state }) }}</p>
               <div v-for="line in bodyLines" :key="'ob' + line.id" :data-kind="sideKind(line, 'right')" data-testid="diff-line" class="whitespace-pre border-l-4 border-transparent pl-2" :class="lineClass(line, 'right')">{{ line.right }}</div>
             </div>
-            <p v-else data-testid="no-outbound-pane" class="p-6 text-sm text-gray-500">{{ tr('noOutboundBody') }}</p>
+            <p v-else data-testid="no-outbound-pane" class="p-6 text-sm text-gray-500">{{ tr(session.attempt_count > 0 ? 'outboundNotCaptured' : 'noOutboundBody') }}</p>
           </section>
         </div>
         <p v-if="comparable && onlyDiff && !bodyLines.some(line => line.kind !== 'same')" data-testid="no-diff" class="text-sm text-gray-500">{{ tr('noDiff') }}</p>
@@ -97,6 +116,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import ConsistencyBadge from '@/components/anthropic/ConsistencyBadge.vue'
 import { getAnthropicSession, type AnthropicCapture, type AnthropicSessionDetail } from '@/api/admin/anthropicRequests'
 import { alignDocuments, alignHeaders, formatDuration, presentDocument, shortId, splitLocalTime, storedDocument, type AlignedLine, type FormatLabels } from '@/utils/anthropicRequestDiff'
 
@@ -116,6 +136,12 @@ const labels = computed<FormatLabels>(() => ({
 const session = computed(() => detail.value?.session)
 const orderedAttempts = computed(() => [...(detail.value?.attempts || [])].sort((a, b) => a.attempt_seq - b.attempt_seq))
 const selected = computed(() => orderedAttempts.value.find(item => item.attempt_seq === selectedSeq.value) || null)
+const outboundUA = computed(() => {
+  const headers = selected.value?.headers
+  if (!Array.isArray(headers)) return ''
+  return headers.filter(item => item && typeof item.name === 'string' && item.name.toLowerCase() === 'user-agent')
+    .map(item => String(item.value ?? '')).join(', ')
+})
 const comparable = computed(() => !!detail.value?.inbound && !!selected.value)
 const truncated = computed(() => !!detail.value?.inbound?.truncated || !!selected.value?.truncated)
 const caller = computed(() => {

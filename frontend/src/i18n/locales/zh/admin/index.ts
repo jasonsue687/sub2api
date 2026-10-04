@@ -1,4 +1,5 @@
 import anthropicRequests from './anthropicRequests'
+import anthropicOutbound from './anthropicOutbound'
 import overview from './overview'
 import channels from './channels'
 import accounts from './accounts'
@@ -11,6 +12,7 @@ import plugins from './plugins'
 
 export default {
   ...anthropicRequests,
+  ...anthropicOutbound,
   ...overview,
   ...channels,
   ...accounts,

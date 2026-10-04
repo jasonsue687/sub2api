@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicaudit"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNormalizeSessionFilterAndChooseAttempt(t *testing.T) {
@@ -68,5 +69,34 @@ func TestListAnthropicSessionsKeepsOldShapeSeparate(t *testing.T) {
 	}
 	if _, err = svc.GetAnthropicSession(context.Background(), "missing"); err == nil {
 		t.Fatal("expected not found")
+	}
+}
+
+func TestSessionOutboundConsistencyExcludesInbound(t *testing.T) {
+	for _, tc := range []struct {
+		name, inbound string
+		attempts      []string
+		count         int
+		want          string
+	}{
+		{"corrected outbound", "mismatch", []string{"matched"}, 1, "matched"},
+		{"unrecognized inbound", "unknown", []string{"matched"}, 1, "matched"},
+		{"earlier retry mismatched", "matched", []string{"mismatch", "matched"}, 2, "mismatch"},
+		{"one unknown retry", "matched", []string{"unknown", "matched"}, 2, "unknown"},
+		{"empty state", "matched", []string{"", "matched"}, 2, "unknown"},
+		{"no outbound", "mismatch", nil, 0, "unknown"},
+		{"missing capture", "matched", []string{"matched"}, 2, "unknown"},
+		{"mismatch with missing capture", "matched", []string{"mismatch"}, 2, "mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			detail := &AnthropicSessionDetail{Inbound: &AnthropicCapture{Direction: "inbound", Consistency: tc.inbound, AttemptCount: tc.count}}
+			for i, state := range tc.attempts {
+				detail.Attempts = append(detail.Attempts, AnthropicCapture{Direction: "outbound", Consistency: state, AttemptSeq: i + 1, Status: 200})
+			}
+			row := sessionRowFromDetail(detail)
+			assert.Equal(t, tc.want, row.Consistency)
+			assert.Equal(t, len(tc.attempts) > 0, row.HasOutbound)
+			assert.Equal(t, tc.inbound, detail.Inbound.Consistency)
+		})
 	}
 }

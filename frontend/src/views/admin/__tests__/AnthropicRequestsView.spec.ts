@@ -39,6 +39,7 @@ describe('Anthropic request monitor list', () => {
     expect(wrapper.get('[data-testid="stat-failed"]').text().replace(/,/g, '')).toBe('12')
     const line = wrapper.get('[data-testid="request-c7f3a1e2abcd"]')
     expect(line.text()).toContain('2.41s')
+    expect(line.get('[data-testid="outbound-consistency"] [data-consistency]').attributes('data-consistency')).toBe('matched')
     expect(line.get('[data-testid="status"]').classes()).toContain('bg-emerald-100')
     expect(line.get('[data-stream="true"]').exists()).toBe(true)
     expect(line.get('[data-testid="attempt-count"]').attributes('data-attempts')).toBe('1')
@@ -74,6 +75,22 @@ describe('Anthropic request monitor list', () => {
     await flushPromises()
     const params = query.mock.calls.at(-1)![0]
     expect(new Date(params.end_time).getTime() - new Date(params.start_time).getTime()).toBe(30 * 24 * 60 * 60 * 1000)
+  })
+
+  it('shows outbound states, applies the outbound filter and opens historical statistics', async () => {
+    query.mockResolvedValue(result([
+      row({ client_request_id: 'bad', consistency: 'mismatch' }),
+      row({ client_request_id: 'unknown', consistency: 'unknown' }),
+      row({ client_request_id: 'none', consistency: 'unknown', attempt_count: 0, has_outbound: false })
+    ]))
+    const wrapper = render(); await flushPromises()
+    expect(wrapper.get('[data-testid="request-bad"] [data-consistency]').attributes('data-consistency')).toBe('mismatch')
+    expect(wrapper.get('[data-testid="request-unknown"] [data-consistency]').attributes('data-consistency')).toBe('unknown')
+    expect(wrapper.get('[data-testid="request-none"] [data-testid="outbound-consistency"]').find('[data-consistency]').exists()).toBe(false)
+    await wrapper.get('[data-testid="status-filter"]').setValue('mismatch'); await flushPromises()
+    expect(query.mock.calls.at(-1)![0]).toMatchObject({ only_mismatch: true })
+    await wrapper.get('[data-testid="outbound-audit"]').trigger('click')
+    expect(push).toHaveBeenCalledWith({ name: 'AdminAnthropicOutboundAudit', query: {} })
   })
 
   it('opens the detail route and ignores a stale response', async () => {

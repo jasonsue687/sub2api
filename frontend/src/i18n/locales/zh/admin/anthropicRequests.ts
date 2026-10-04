@@ -13,7 +13,7 @@ export default {
     status: '状态',
     allStatus: '全部状态',
     onlyFailed: '仅失败',
-    onlyMismatch: '仅不一致',
+    onlyMismatch: '仅出站不一致',
     model: '模型',
     allModels: '全部模型',
     onlyMulti: '仅多次出站',
@@ -97,6 +97,12 @@ export default {
     truncated: '脱敏后的正文超过 64KiB，只保留截断预览。',
     noOutboundBody: '这次入站没有对应的出站请求。',
     footer: '入站仅省略 messages、tools、tool_choice，凭据掩码；system 等其他参数保留原值。出站沿用提示词和工具脱敏规则。采集不包含 TLS 指纹及出站采集点之后自动补充的请求头。',
+    outboundAudit: '出站一致性 / 历史统计',
+    outboundConsistency: '出站一致性',
+    allOutboundAttempts: '全部出站尝试',
+    selectedOutboundAttempt: '当前查看第 {seq} 次出站',
+    outboundNotCaptured: '已尝试出站，但没有对应采集记录',
+    outboundRuleHint: '仅检查出站 UA 与 billing 入口、版本；入站结果不参与。任一出站不一致则标为不一致；存在未知或缺失采集则无法确认全部一致。',
     dash: '—'
   }
 }

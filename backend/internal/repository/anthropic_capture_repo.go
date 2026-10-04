@@ -117,11 +117,11 @@ grouped AS (
     COALESCE(NULLIF(max(i.api_key_name), ''), max(k.api_key_name), '') AS api_key_name,
     COALESCE(NULLIF(max(i.username), ''), max(k.username), '') AS username,
     CASE
-      WHEN bool_or(k.consistency = 'mismatch') THEN 'mismatch'
-      WHEN bool_or(k.consistency = 'unknown' OR k.consistency = '') THEN 'unknown'
-      WHEN bool_or(k.consistency = 'matched') THEN 'matched'
+      WHEN bool_or(k.consistency = 'mismatch') FILTER (WHERE k.direction = 'outbound') THEN 'mismatch'
+      WHEN bool_or(k.consistency <> 'matched') FILTER (WHERE k.direction = 'outbound') THEN 'unknown'
+      WHEN bool_or(k.consistency = 'matched') FILTER (WHERE k.direction = 'outbound') THEN 'matched'
       ELSE 'unknown'
-    END AS consistency,
+    END AS outbound_consistency,
     bool_or(k.truncated) AS truncated
   FROM keyed k
   LEFT JOIN inbound i ON i.gkey = k.gkey
@@ -129,7 +129,12 @@ grouped AS (
   GROUP BY k.gkey
 ),
 scored AS (
-  SELECT *, GREATEST(outbound_rows, inbound_attempt_count) AS attempt_count
+  SELECT *, GREATEST(outbound_rows, inbound_attempt_count) AS attempt_count,
+    CASE
+      WHEN outbound_consistency = 'mismatch' THEN 'mismatch'
+      WHEN inbound_attempt_count > outbound_rows THEN 'unknown'
+      ELSE outbound_consistency
+    END AS consistency
   FROM grouped
 ),
 windowed AS (

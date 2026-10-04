@@ -14,14 +14,18 @@
 - 入站和出站继续使用现有上限：原始 body 超过 8MiB 时只记 `too_large` 状态；无法解析的原始 JSON 只记 `invalid_json`，不把修正后的 JSON 当作原始参数保存；处理后的单份文档超过 64KiB 时只存截断预览。记录中的 `original_bytes` 是整个请求体的长度。这些异常记录不能视为完整请求。
 - 新表 `anthropic_request_captures`（迁移 250）。列表查询不读取 body。保留 30 天，由 Ops 清理任务删除。原 `ops_system_logs` 摘要和 `GET /admin/ops/anthropic-requests` 保持不变。新页面使用 `GET /admin/ops/anthropic-request-sessions` 与 `.../detail`。
 - 入站开关 `SUB2API_ANTHROPIC_INBOUND_AUDIT_ENABLED` 默认开启，与出站总开关独立。账号白名单仍用 `SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS`；尚未选中账号的失败入站（account id 为 0）会保留。
-- 入站账号范围和尝试数不依赖出站采集开关；即使某次出站不保存全文，也会记录其实际账号和尝试。会话一致性按全部入站及出站综合：存在 mismatch 即标为不一致，否则存在 unknown 即标为未知，全部 matched 才标为匹配。
+- 入站账号范围和尝试数不依赖出站采集开关；即使某次出站不保存全文，也会记录其实际账号和尝试。列表和详情的会话一致性仅汇总出站尝试：存在 mismatch 即标为不一致，否则有 unknown、空状态或已知缺失采集即标为未知，全部出站 matched 才标为匹配；入站判定不参与。详情单独展示当前选中出站的 UA、billing 入口/版本和具体原因。
 - 手工清理系统日志时，平台、日志级别、主机和文本搜索条件无法映射到采集表，因此带这些条件的操作不删除采集记录；可映射的请求 ID、账号、用户、模型及时间条件按原范围清理。30 天定时保留策略不变。
+
+## 出站一致性检查与历史统计
+
+从请求列表或详情点击“出站一致性 / 历史统计”，进入 `/admin/anthropic-outbound`。按订阅账号查询原 `ops_system_logs` 摘要，覆盖保留期内的历史及当前出站；恢复一致、不一致、未知统计、身份参数组合、逐次出站的原因、两条摘要对比与自动刷新。不补造历史入站或正文，不改变入站原始参数的采集与省略规则。
 
 ## 原出站摘要
 
 ## 入口与采集开关
 
-下面这一节描述仍写入 `ops_system_logs` 的出站摘要，以及未改动的旧查询 API。当前页面不再调用该 API。
+下面这一节描述仍写入 `ops_system_logs` 的出站摘要，以及未改动的旧查询 API。入站/出站对照页面使用新采集 API，独立出站一致性页面继续使用该摘要 API。
 
 所有符合采集范围的 Anthropic 订阅账号默认开启，无需逐个配置 ID；新增账号自动纳入。范围仍为直连 `api.anthropic.com` 的订阅请求，API Key 和自定义中转地址不在此监控范围内。
 
