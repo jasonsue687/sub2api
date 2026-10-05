@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicaudit"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"go.uber.org/zap"
@@ -269,6 +270,7 @@ func (s *FailoverState) HandleFailoverError(
 		if !sleepWithContext(ctx, retryDelay) {
 			return FailoverCanceled
 		}
+		anthropicaudit.MarkRetry(ctx, anthropicaudit.ReasonSameAccountRetry)
 		return FailoverContinue
 	}
 
@@ -296,6 +298,7 @@ func (s *FailoverState) HandleFailoverError(
 
 	// 递增切换计数
 	s.SwitchCount++
+	anthropicaudit.MarkRetry(ctx, anthropicaudit.ReasonAccountSwitch)
 	logger.FromContext(ctx).Warn("gateway.failover_switch_account",
 		zap.Int64("account_id", accountID),
 		zap.Int("upstream_status", failoverErr.StatusCode),
@@ -359,6 +362,7 @@ func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAc
 			zap.Int("max_switches", s.MaxSwitches),
 		)
 		s.FailedAccountIDs = make(map[int64]struct{})
+		anthropicaudit.MarkRetry(ctx, anthropicaudit.ReasonSameAccountRetry)
 		// 利润门否决的账号不参与退避重试的解除：判定依据（冻结的下游倍率）在
 		// 同一请求内不变，放它们回池只会被再次否决。
 		for id := range s.profitVetoedAccountIDs {

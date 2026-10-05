@@ -26,18 +26,31 @@ import (
 const Component = "audit.anthropic_outbound"
 const MaxBodyBytes = 8 << 20
 
+// RetentionDays is shared by the audit query window and scheduled cleanup.
+const RetentionDays = 30
+
 var uaPattern = regexp.MustCompile(`^claude-cli/(\d+\.\d+\.\d+) \(external, ([a-zA-Z0-9_-]+)\)$`)
 var versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+`)
 var tokenPattern = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,120}$`)
 var oldIdentityPattern = regexp.MustCompile(`^user_(.+)_account_(.*)_session_(.+)$`)
 
-// EnabledForAccount fails closed: deployment must explicitly enable collection
-// and name the account IDs. An empty/invalid list never enables every account.
+// EnabledForAccount defaults to all accounts. Begin separately enforces the
+// Anthropic subscription request scope. Explicit deployment overrides are kept.
 func EnabledForAccount(accountID int64) bool {
-	if accountID <= 0 || os.Getenv("SUB2API_ANTHROPIC_AUDIT_ENABLED") != "true" {
+	if accountID <= 0 {
 		return false
 	}
-	for _, raw := range strings.Split(os.Getenv("SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS"), ",") {
+	if raw := strings.TrimSpace(os.Getenv("SUB2API_ANTHROPIC_AUDIT_ENABLED")); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil || !enabled {
+			return false
+		}
+	}
+	selection := strings.TrimSpace(os.Getenv("SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS"))
+	if selection == "" || selection == "*" {
+		return true
+	}
+	for _, raw := range strings.Split(selection, ",") {
 		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 		if err == nil && id == accountID {
 			return true

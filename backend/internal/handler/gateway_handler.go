@@ -1038,6 +1038,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					return
 				}
 
+				var entrypointConflict *service.FingerprintEntrypointConflictError
+				if errors.As(err, &entrypointConflict) {
+					reqLog.Warn("gateway.fingerprint_entrypoint_conflict",
+						zap.Int64("account_id", account.ID),
+						zap.String("kind", entrypointConflict.Kind),
+					)
+					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", entrypointConflict.Error())
+					return
+				}
+
 				var promptTooLongErr *service.PromptTooLongError
 				if errors.As(err, &promptTooLongErr) {
 					reqLog.Warn("gateway.prompt_too_long_from_antigravity",

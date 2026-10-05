@@ -73,14 +73,14 @@ func TestAnthropicConsistencyUnknownAndMatched(t *testing.T) {
 		})
 	}
 }
-func TestAnthropicScopeAndOptIn(t *testing.T) {
+func TestAnthropicScopeAndOverrides(t *testing.T) {
 	req := auditRequest(t, sampleBody)
 	if Begin(req, 12) != nil {
 		t.Fatal("captured unselected account")
 	}
 	t.Setenv("SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS", "")
-	if Begin(req, 11) != nil {
-		t.Fatal("empty selection must fail closed")
+	if Begin(req, 12) == nil {
+		t.Fatal("empty selection must enable all eligible accounts")
 	}
 	t.Setenv("SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS", "11")
 	req.URL.Host = "example.org"
@@ -151,4 +151,31 @@ func TestAnthropicFinishRecordsEachAttemptAndSanitizesErrors(t *testing.T) {
 	}
 	var absent *Snapshot
 	absent.Finish(nil, nil)
+}
+
+func TestAnthropicDefaultCollectionAndOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name, enabled, ids string
+		accountID          int64
+		want               bool
+	}{
+		{"defaults include existing account", "", "", 11, true},
+		{"defaults include new account", "", "", 9999, true},
+		{"explicit all", "true", "*", 12, true},
+		{"global disable", "false", "", 11, false},
+		{"invalid switch fails closed", "invalid", "", 11, false},
+		{"explicit selected account", "true", "11, 12", 12, true},
+		{"explicit unselected account", "true", "11", 12, false},
+		{"invalid selection fails closed", "", "invalid", 11, false},
+		{"invalid account", "", "", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := auditRequest(t, sampleBody)
+			t.Setenv("SUB2API_ANTHROPIC_AUDIT_ENABLED", tc.enabled)
+			t.Setenv("SUB2API_ANTHROPIC_AUDIT_ACCOUNT_IDS", tc.ids)
+			if got := Begin(req, tc.accountID) != nil; got != tc.want {
+				t.Fatalf("collection = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

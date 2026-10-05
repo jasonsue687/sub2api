@@ -92,7 +92,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// Mimicry may override the cached User-Agent later, even without a fingerprint.
 	if billingUA := effectiveBillingUserAgent(mimicUserAgent, tokenType, mimicClaudeCode, fingerprint); billingUA != "" {
-		body = syncBillingHeaderVersion(body, billingUA)
+		var err error
+		body, err = syncBillingHeaderIdentity(body, billingUA, account.ID)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===
@@ -160,7 +164,8 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		}
 	}
 
-	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）
+	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）。
+	// 沿用账号缓存的完整 UA；billing 已在构造请求前与最终 UA 对齐。
 	if fingerprint != nil {
 		s.identityService.ApplyFingerprint(req, fingerprint)
 	}

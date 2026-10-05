@@ -325,11 +325,21 @@ func (s *OpsCleanupService) runCleanupOnce(ctx context.Context) (opsCleanupDelet
 	effective := s.snapshotEffective()
 	now := time.Now().UTC()
 
+	// Audit records have their own retention policy; never pass this shared
+	// table through generic deletion or TRUNCATE using runtime-log retention.
+	var err error
+	out.systemLogs, err = cleanupSystemLogs(ctx, s.db, now, effective.SystemLogRetentionDays, opsCleanupBatchSize)
+	if err != nil {
+		return out, err
+	}
+	if _, err = cleanupAnthropicCaptures(ctx, s.db, now, opsCleanupBatchSize); err != nil {
+		return out, err
+	}
+
 	targets := []opsCleanupTarget{
 		{effective.ErrorLogRetentionDays, "ops_error_logs", "created_at", false, &out.errorLogs},
 		{effective.ErrorLogRetentionDays, "ops_ingress_reject_aggregates", "bucket_start", false, &out.ingressRejects},
 		{effective.ErrorLogRetentionDays, "ops_alert_events", "created_at", false, &out.alertEvents},
-		{effective.SystemLogRetentionDays, "ops_system_logs", "created_at", false, &out.systemLogs},
 		{effective.SystemLogRetentionDays, "ops_system_log_cleanup_audits", "created_at", false, &out.logAudits},
 		{effective.MinuteMetricsRetentionDays, "ops_system_metrics", "created_at", false, &out.systemMetrics},
 		{effective.HourlyMetricsRetentionDays, "ops_metrics_hourly", "bucket_start", false, &out.hourlyPreagg},

@@ -66,8 +66,8 @@ func (s *OpsService) ListAnthropicRequests(ctx context.Context, filter *Anthropi
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return nil, err
 	}
-	if filter == nil || filter.AccountID <= 0 || filter.StartTime.IsZero() || !filter.StartTime.Before(filter.EndTime) || filter.EndTime.Sub(filter.StartTime) > 7*24*time.Hour {
-		return nil, infraerrors.BadRequest("ANTHROPIC_AUDIT_INVALID_FILTER", "Choose an account and a time window of up to 7 days")
+	if filter == nil || filter.AccountID <= 0 || filter.StartTime.IsZero() || !filter.StartTime.Before(filter.EndTime) || filter.EndTime.Sub(filter.StartTime) > anthropicaudit.RetentionDays*24*time.Hour {
+		return nil, infraerrors.BadRequest("ANTHROPIC_AUDIT_INVALID_FILTER", "Choose an account and a time window of up to 30 days")
 	}
 	f := *filter
 	if f.Page < 1 {

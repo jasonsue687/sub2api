@@ -1,0 +1,84 @@
+name: AsterFlow Deploy
+run-name: ${{ inputs.operation }} ${{ inputs.release_tag || 'previous successful release' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Published AsterFlow tag; leave blank only for rollback to the previous successful release'
+        required: false
+        type: string
+      operation:
+        description: 'Preflight reads production metadata; deploy backs up and replaces the application'
+        required: true
+        type: choice
+        options: [preflight, deploy, preflight-rollback, rollback]
+        default: preflight
+      allow_migrations:
+        description: 'Allow new DB migrations; on failure, no automatic rollback or DB restore'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+concurrency:
+  group: asterflow-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'jasonsue687/sub2api' && github.ref == 'refs/heads/asterflow'
+    environment:
+      name: production
+      deployment: ${{ inputs.operation == 'deploy' || inputs.operation == 'rollback' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Configure isolated deployment SSH identity
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          JUMP_HOST: ${{ vars.DEPLOY_JUMP_HOST }}
+          TARGET_HOST: ${{ vars.DEPLOY_TARGET_HOST }}
+        run: python3 deploy/asterflow/ssh_config.py
+      - name: Resolve and verify immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          OPERATION: ${{ inputs.operation }}
+        run: python3 deploy/asterflow/resolve.py
+      - name: Run production operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ALLOW_MIGRATIONS: ${{ inputs.allow_migrations }}
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | ssh -F "$RUNNER_TEMP/asterflow-ssh/config" asterflow-prod-account-central-01 "$OPERATION" | tee deployment-result.json
+          import json, os
+          from pathlib import Path
+          payload = json.loads(Path('release/release.json').read_text())
+          payload['allow_migrations'] = os.environ['ALLOW_MIGRATIONS'] == 'true'
+          payload['registry_token'] = os.environ['REGISTRY_TOKEN']
+          payload['registry_user'] = os.environ['REGISTRY_USER']
+          print(json.dumps(payload))
+          PY
+      - name: Deployment result
+        if: always()
+        run: |
+          if test -f deployment-result.json; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat deployment-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Remove runner credentials
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/asterflow-ssh"
