@@ -203,6 +203,7 @@
 
         <!-- Tab: Gateway -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
+          <StrictSessionBindingSettings :form="form" @update:form="Object.assign(form, $event)" />
           <!-- Overload Cooldown (529) Settings -->
           <div class="card">
             <div
@@ -9031,6 +9032,11 @@ import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
+import StrictSessionBindingSettings from "@/views/admin/settings/StrictSessionBindingSettings.vue";
+import {
+  strictSessionBindingFormDefaults,
+  strictSessionBindingUpdatePayload,
+} from "@/views/admin/settings/strictSessionBindingForm";
 import RechargeBonusTierEditor from "@/components/admin/settings/RechargeBonusTierEditor.vue";
 import {
   normalizeRechargeBonusMode,
@@ -9980,6 +9986,7 @@ const form = reactive<SettingsForm>({
   // Identity patch (Claude -> Gemini)
   enable_identity_patch: true,
   identity_patch_prompt: "",
+  ...strictSessionBindingFormDefaults,
   // Ops monitoring (vNext)
   ops_monitoring_enabled: true,
   ops_realtime_monitoring_enabled: true,
@@ -11227,9 +11234,9 @@ async function loadSubscriptionGroups() {
   try {
     const groups = await adminAPI.groups.getAll();
     subscriptionGroups.value = groups.filter(
-      (group) =>
-        group.subscription_type === "subscription" && group.status === "active",
-    );
+        (group) =>
+          group.subscription_type === "subscription" && group.status === "active",
+      );
   } catch (_error: unknown) {
     subscriptionGroups.value = [];
   }
@@ -11648,6 +11655,7 @@ async function saveSettings() {
       grok_default_base_url_mode: form.grok_default_base_url_mode,
       enable_identity_patch: form.enable_identity_patch,
       identity_patch_prompt: form.identity_patch_prompt,
+      ...strictSessionBindingUpdatePayload(form),
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,

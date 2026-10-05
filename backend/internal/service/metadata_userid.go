@@ -30,6 +30,26 @@ type jsonUserID struct {
 	SessionID   string `json:"session_id"`
 }
 
+// ParseMetadataSessionID extracts only the conversation ID. Session binding does
+// not require a device or account identity. Keep ParseMetadataUserID's stricter
+// contract for callers that need those fields to rewrite upstream metadata.
+func ParseMetadataSessionID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "{") {
+		var session struct {
+			ID string `json:"session_id"`
+		}
+		if err := json.Unmarshal([]byte(raw), &session); err != nil {
+			return ""
+		}
+		return session.ID
+	}
+	if parsed := ParseMetadataUserID(raw); parsed != nil {
+		return parsed.SessionID
+	}
+	return ""
+}
+
 // ParseMetadataUserID parses a metadata.user_id string in either format.
 // Returns nil if the input cannot be parsed.
 func ParseMetadataUserID(raw string) *ParsedUserID {

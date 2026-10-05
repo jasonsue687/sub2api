@@ -227,6 +227,8 @@ type UpdateSettingsRequest struct {
 	EnableIdentityPatch bool   `json:"enable_identity_patch"`
 	IdentityPatchPrompt string `json:"identity_patch_prompt"`
 
+	StrictSessionBindingSettingsRequest
+
 	// Ops monitoring (vNext)
 	OpsMonitoringEnabled         *bool   `json:"ops_monitoring_enabled"`
 	OpsRealtimeMonitoringEnabled *bool   `json:"ops_realtime_monitoring_enabled"`
@@ -1521,6 +1523,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
+	resolvedStrict, err := h.prepareStrictSessionBindingSave(c.Request.Context(), previousSettings, req, sentFields, omitted)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
 	settings := &service.SystemSettings{
 		// 系统全局 platform quota 默认值（整体替换语义）
 		DefaultPlatformQuotas:       req.DefaultPlatformQuotas,
@@ -2101,6 +2109,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		},
 		ForceEmailOnThirdPartySignup: boolValueOrDefault(req.ForceEmailOnThirdPartySignup, previousAuthSourceDefaults.ForceEmailOnThirdPartySignup),
 	}
+	if resolvedStrict != nil {
+		service.ApplyResolvedStrictSessionBinding(settings, *resolvedStrict)
+	}
 	if err := h.settingService.UpdateSettingsWithAuthSourceDefaultsOmitting(c.Request.Context(), settings, authSourceDefaults, omitted); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -2470,6 +2481,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	} else {
 		payload.DefaultPlatformQuotas = platformQuotas
 	}
+	applyStrictSessionBindingDTO(&payload, h.settingService.StrictSessionBindingAdminView(updatedSettings))
 	response.Success(c, systemSettingsResponseData(payload, updatedAuthSourceDefaults))
 }
 

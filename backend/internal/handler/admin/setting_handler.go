@@ -417,6 +417,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		payload.DefaultPlatformQuotas = platformQuotas
 	}
 
+	applyStrictSessionBindingDTO(&payload, h.settingService.StrictSessionBindingAdminView(settings))
 	response.Success(c, systemSettingsResponseData(payload, authSourceDefaults))
 }
 

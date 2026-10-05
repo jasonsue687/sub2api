@@ -170,6 +170,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	body = parsedReq.Body.Bytes()
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
+
 	bindRequestedReasoningEffort(c, body, reqModel)
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
 	if policyBody, changed, err := applyAnthropicReasoningEffortPolicyForRequest(c, apiKey, body); err != nil {
@@ -227,6 +228,22 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	// 获取平台：优先使用强制平台（/antigravity 路由），其次使用 composite 解析出的目标平台，否则使用分组平台
+	platform := ""
+	if forcePlatform, ok := middleware2.GetForcePlatformFromContext(c); ok {
+		platform = forcePlatform
+	} else if resolvedPlatform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
+		platform = resolvedPlatform
+	} else if apiKey.Group != nil {
+		platform = apiKey.Group.Platform
+	}
+	if platform != service.PlatformGemini {
+		if _, err := h.snapshotStrictBinding(c); err != nil {
+			h.writeStrictSessionSetupError(c, reqLog, err, false)
+			return
+		}
+	}
+
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
 		h.anthropicSecurityAuditError(c, decision)
 		return
@@ -234,6 +251,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// Track if we've started streaming (for error handling)
 	streamStarted := false
+	writerSizeAtEntry := h.strictMessagesWriterSize(c)
 
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
 	if h.errorPassthroughService != nil {
@@ -289,22 +307,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		UserAgent: c.GetHeader("User-Agent"),
 		APIKeyID:  apiKey.ID,
 	}
-	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
-	// [DEBUG-STICKY] 打印会话 hash 生成结果
-	reqLog.Info("sticky.session_hash_generated",
-		zap.String("session_hash", sessionHash),
-		zap.String("metadata_user_id_raw", parsedReq.MetadataUserID),
-	)
-
-	// 获取平台：优先使用强制平台（/antigravity 路由），其次使用 composite 解析出的目标平台，否则使用分组平台
-	platform := ""
-	if forcePlatform, ok := middleware2.GetForcePlatformFromContext(c); ok {
-		platform = forcePlatform
-	} else if resolvedPlatform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
-		platform = resolvedPlatform
-	} else if apiKey.Group != nil {
-		platform = apiKey.Group.Platform
+	sessionHash := h.gatewayService.GenerateSessionHashWithContext(c.Request.Context(), parsedReq)
+	if !h.writeStrictStickySessionHash(c, reqLog, platform, sessionHash, parsedReq.MetadataUserID) {
+		// [DEBUG-STICKY] 打印会话 hash 生成结果
+		reqLog.Info("sticky.session_hash_generated",
+			zap.String("session_hash", sessionHash),
+			zap.String("metadata_user_id_raw", parsedReq.MetadataUserID),
+		)
 	}
 	sessionKey := sessionHash
 	if platform == service.PlatformGemini && sessionHash != "" {
@@ -317,7 +327,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
 		// [DEBUG-STICKY] 打印粘性会话查询结果
 		reqLog.Info("sticky.cache_lookup",
-			zap.String("session_key", sessionKey),
+			zap.String("session_key", h.strictLoggedSessionKey(c, platform, sessionKey)),
 			zap.Int64("bound_account_id", sessionBoundAccountID),
 		)
 		if sessionBoundAccountID > 0 {
@@ -637,6 +647,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	fallbackUsed := false
 
+	strictRT, err := h.beginStrictClaudeMessages(c, reqLog, currentAPIKey, platform, parsedReq.MetadataUserID, &sessionKey, &hasBoundSession, streamStarted)
+	if err != nil {
+		return
+	}
+
 	// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
 	// 避免单账号分组收到 503 (MODEL_CAPACITY_EXHAUSTED) 时设 29s 限流，导致后续请求连续快速失败。
 	if h.gatewayService.IsSingleAntigravityAccountGroup(c.Request.Context(), currentAPIKey.GroupID) {
@@ -652,7 +667,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	sessionSlotAccounts := make(map[int64]*service.Account)
 	upstreamServedSession := false
 	defer func() {
-		if upstreamServedSession {
+		// Strict requests share a permanent session identity. A failed request
+		// does not own the shared capacity member; let its idle timeout expire.
+		if upstreamServedSession || (strictRT != nil && strictRT.Active) {
 			return
 		}
 		// 客户端可能已断开、请求 ctx 已取消，用独立 ctx 执行释放
@@ -663,6 +680,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
+		h.applyStrictBindingLimit(fs, strictRT)
 		retryWithFallback := false
 
 		for {
@@ -674,13 +692,21 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			// 选择支持该模型的账号
 			reqLog.Info("sticky.selecting_account",
-				zap.String("session_key", sessionKey),
+				zap.String("session_key", strictSelectingSessionKey(strictRT, sessionKey)),
 				zap.Int64("sticky_bound_account_id", sessionBoundAccountID),
 				zap.Bool("has_bound_session", hasBoundSession),
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
 			)
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			var selection *service.AccountSelectionResult
+			if strictRT.locksAccount() {
+				selection, err = h.selectMessageAccount(c, strictRT, currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			} else {
+				selection, err = h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			}
 			if err != nil {
+				if h.strictSelectFailureHandled(c, strictRT, reqLog, err, streamStarted, writerSizeAtEntry) {
+					return
+				}
 				if failoverClientGone(c) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
 					return
@@ -762,6 +788,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("model", reqModel),
 						zap.String("platform", platform),
 					)
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
+						return
+					}
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
 					return
 				}
@@ -774,6 +803,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 					)
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
+						return
+					}
 					h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", gatewayQueueFullCode, "Too many pending requests, please retry later", streamStarted)
 					return
 				}
@@ -798,6 +830,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if err != nil {
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
+						return
+					}
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
@@ -812,6 +847,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					accountReleaseFunc()
 				}
 				reqLog.Debug("gateway.account_slot_profit_vetoed", zap.Int64("account_id", account.ID), zap.String("reason", reason))
+				if h.strictGiveUpAccount(c, strictRT, reqLog, account, "profit_control", streamStarted, writerSizeAtEntry) {
+					return
+				}
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
 					reqLog.Warn("gateway.profit_veto_attempts_exhausted", zap.Int("profit_veto_count", fs.ProfitVetoCount()))
 					markOpsRoutingCapacityLimited(c)
@@ -1019,6 +1057,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Any("fallback_group_id", fallbackGroupID),
 						zap.Bool("fallback_used", fallbackUsed),
 					)
+					if h.strictPromptTooLongStops(c, strictRT, reqLog, account, promptTooLongErr) {
+						return
+					}
 					if !fallbackUsed && fallbackGroupID != nil && *fallbackGroupID > 0 {
 						fallbackGroup, err := h.gatewayService.ResolveGroupByID(c.Request.Context(), *fallbackGroupID)
 						if err != nil {
@@ -1066,6 +1107,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
+					switch h.handleStrictUpstreamFailover(c, fs, strictRT, reqLog, account, failoverErr, streamStarted, writerSizeAtEntry) {
+					case strictFlowStop:
+						return
+					case strictFlowSameAccount:
+						continue
+					}
 					if c.Writer.Size() != writerSizeBeforeForward {
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
@@ -1088,7 +1135,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				upstreamErrorAlreadyCommunicated := gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
-					wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
+					if strictRT.locksAccount() {
+						sizeBeforeError := c.Writer.Size()
+						h.rejectStrictAccount(c, strictRT, reqLog, account.ID, "upstream_failed", streamStarted, writerSizeAtEntry)
+						wroteFallback = c.Writer.Size() != sizeBeforeError
+					} else {
+						wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
+					}
 				}
 				forwardFailedFields := []zap.Field{
 					zap.Int64("account_id", account.ID),
@@ -1981,7 +2034,7 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 	h.handleStreamingAwareErrorWithCode(c, status, errType, "", message, streamStarted)
 }
 
-func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool) {
+func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool, reasons ...string) {
 	if streamStarted {
 		// 响应状态码已固化为 200（ping/部分数据已 flush），错误只能就地以 SSE 帧回传。
 		// 标记本次流内错误，供 ops_error_logger 补记——否则该中间件按 status>=400 采集，
@@ -2004,6 +2057,9 @@ func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, statu
 			if code != "" {
 				errorCode = `,"code":` + strconv.Quote(code)
 			}
+			if len(reasons) > 0 && reasons[0] != "" {
+				errorCode += `,"reason":` + strconv.Quote(reasons[0])
+			}
 			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + errorCode + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
@@ -2014,7 +2070,7 @@ func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, statu
 	}
 
 	// Normal case: return JSON response with proper status code
-	h.errorResponseWithCode(c, status, errType, code, message)
+	h.errorResponseWithCode(c, status, errType, code, message, reasons...)
 }
 
 // ensureForwardErrorResponse 在 Forward 返回错误但尚未写响应时补写统一错误响应。
@@ -2114,10 +2170,13 @@ func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, mess
 	h.errorResponseWithCode(c, status, errType, "", message)
 }
 
-func (h *GatewayHandler) errorResponseWithCode(c *gin.Context, status int, errType, code, message string) {
+func (h *GatewayHandler) errorResponseWithCode(c *gin.Context, status int, errType, code, message string, reasons ...string) {
 	errorObject := gin.H{"type": errType, "message": message}
 	if code != "" {
 		errorObject["code"] = code
+	}
+	if len(reasons) > 0 && reasons[0] != "" {
+		errorObject["reason"] = reasons[0]
 	}
 	c.JSON(status, gin.H{
 		"type":  "error",

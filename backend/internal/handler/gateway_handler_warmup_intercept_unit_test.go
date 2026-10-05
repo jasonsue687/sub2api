@@ -1,5 +1,3 @@
-//go:build unit
-
 package handler
 
 import (
@@ -29,8 +27,23 @@ type fakeSchedulerCache struct {
 	accounts []*service.Account
 }
 
-func (f *fakeSchedulerCache) GetSnapshot(_ context.Context, _ service.SchedulerBucket) ([]*service.Account, bool, error) {
-	return f.accounts, true, nil
+func (f *fakeSchedulerCache) GetSnapshot(_ context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
+	if f == nil || bucket.GroupID == 0 {
+		return f.accounts, true, nil
+	}
+	filtered := make([]*service.Account, 0, len(f.accounts))
+	for _, account := range f.accounts {
+		if account == nil {
+			continue
+		}
+		for _, membership := range account.AccountGroups {
+			if membership.GroupID == bucket.GroupID {
+				filtered = append(filtered, account)
+				break
+			}
+		}
+	}
+	return filtered, true, nil
 }
 func (f *fakeSchedulerCache) CaptureBucketWriteToken(_ context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
 	return service.SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
@@ -77,14 +90,28 @@ func (f *fakeSchedulerCache) SetOutboxWatermark(_ context.Context, _ int64) erro
 
 type fakeGroupRepo struct {
 	group *service.Group
+	byID  map[int64]*service.Group
+}
+
+func (f *fakeGroupRepo) lookupGroup(id int64) (*service.Group, error) {
+	if f != nil && f.byID != nil {
+		if group, ok := f.byID[id]; ok {
+			return group, nil
+		}
+		return nil, service.ErrGroupNotFound
+	}
+	if f == nil {
+		return nil, service.ErrGroupNotFound
+	}
+	return f.group, nil
 }
 
 func (f *fakeGroupRepo) Create(context.Context, *service.Group) error { return nil }
-func (f *fakeGroupRepo) GetByID(context.Context, int64) (*service.Group, error) {
-	return f.group, nil
+func (f *fakeGroupRepo) GetByID(_ context.Context, id int64) (*service.Group, error) {
+	return f.lookupGroup(id)
 }
-func (f *fakeGroupRepo) GetByIDLite(context.Context, int64) (*service.Group, error) {
-	return f.group, nil
+func (f *fakeGroupRepo) GetByIDLite(_ context.Context, id int64) (*service.Group, error) {
+	return f.lookupGroup(id)
 }
 func (f *fakeGroupRepo) Update(context.Context, *service.Group) error          { return nil }
 func (f *fakeGroupRepo) Delete(context.Context, int64) error                   { return nil }
@@ -261,7 +288,7 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_MixedScheduli
 	req := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(context.WithValue(req.Context(), ctxkey.Group, group))
-	c.Request = req
+	c.Request = req.WithContext(service.WithStrictSessionBindingConfig(req.Context(), config.GatewayStrictSessionBindingConfig{Enabled: false}))
 
 	apiKey := &service.APIKey{
 		ID:      3001,
@@ -290,7 +317,9 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_MixedScheduli
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.True(t, strings.HasPrefix(resp["id"].(string), "msg_01"))
+	messageID, ok := resp["id"].(string)
+	require.True(t, ok)
+	require.True(t, strings.HasPrefix(messageID, "msg_01"))
 	require.Equal(t, "claude-sonnet-4-5", resp["model"])
 
 	content, ok := resp["content"].([]any)
@@ -350,7 +379,7 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_ForcePlatform
 	ctx := context.WithValue(req.Context(), ctxkey.Group, group)
 	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, service.PlatformAntigravity)
 	req = req.WithContext(ctx)
-	c.Request = req
+	c.Request = req.WithContext(service.WithStrictSessionBindingConfig(req.Context(), config.GatewayStrictSessionBindingConfig{Enabled: false}))
 	c.Set(string(middleware.ContextKeyForcePlatform), service.PlatformAntigravity)
 
 	apiKey := &service.APIKey{
@@ -379,6 +408,8 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_ForcePlatform
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.True(t, strings.HasPrefix(resp["id"].(string), "msg_01"))
+	messageID, ok := resp["id"].(string)
+	require.True(t, ok)
+	require.True(t, strings.HasPrefix(messageID, "msg_01"))
 	require.Equal(t, "claude-sonnet-4-5", resp["model"])
 }

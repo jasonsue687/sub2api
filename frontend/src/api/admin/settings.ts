@@ -11,6 +11,10 @@ import type {
   NotifyEmailEntry,
 } from "@/types";
 import type { RechargeBonusTier } from "@/utils/rechargeBonus";
+import type {
+  StrictSessionBindingAdminSettings,
+  StrictSessionBindingUpdate,
+} from "./strictSessionBinding";
 
 export interface DefaultSubscriptionSetting {
   group_id: number;
@@ -398,7 +402,7 @@ export function deriveWeChatConnectStoredMode(
 /**
  * System settings interface
  */
-export interface SystemSettings {
+export interface SystemSettings extends StrictSessionBindingAdminSettings {
   // Registration settings
   registration_enabled: boolean;
   email_verify_enabled: boolean;
@@ -757,7 +761,7 @@ export interface SystemSettings {
   allow_user_view_error_requests: boolean;
 }
 
-export interface UpdateSettingsRequest {
+export interface UpdateSettingsRequest extends StrictSessionBindingUpdate {
   registration_enabled?: boolean;
   email_verify_enabled?: boolean;
   registration_email_suffix_whitelist?: string[];

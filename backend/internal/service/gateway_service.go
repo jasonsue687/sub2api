@@ -262,10 +262,9 @@ func shortSessionHash(sessionHash string) string {
 	if sessionHash == "" {
 		return ""
 	}
-	if len(sessionHash) <= 8 {
-		return sessionHash
-	}
-	return sessionHash[:8]
+	// Metadata and strict-session callers may supply a raw session ID. Never
+	// log the original value or its prefix, even when the ID is short.
+	return StrictSessionFingerprint(sessionHash)
 }
 
 func redactAuthHeaderValue(v string) string {
@@ -799,6 +798,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	strictSessionGateway
 }
 
 // NewGatewayService creates a new GatewayService
@@ -889,6 +889,10 @@ func NewGatewayService(
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
 func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
+	return s.GenerateSessionHashWithContext(context.Background(), parsed)
+}
+
+func (s *GatewayService) GenerateSessionHashWithContext(ctx context.Context, parsed *ParsedRequest) string {
 	if parsed == nil {
 		return ""
 	}
@@ -897,18 +901,10 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed.MetadataUserID != "" {
 		uid := ParseMetadataUserID(parsed.MetadataUserID)
 		if uid != nil && uid.SessionID != "" {
-			slog.Info("sticky.hash_source",
-				"source", "metadata_user_id",
-				"session_id", uid.SessionID,
-				"device_id", uid.DeviceID,
-				"is_new_format", uid.IsNewFormat,
-			)
+			s.logStickyMetadataSession(ctx, uid)
 			return uid.SessionID
 		}
-		slog.Info("sticky.hash_metadata_parse_failed",
-			"metadata_user_id", parsed.MetadataUserID,
-			"parsed_nil", uid == nil,
-		)
+		s.logStickyMetadataParseFailed(ctx, parsed.MetadataUserID, uid == nil)
 	}
 
 	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容
