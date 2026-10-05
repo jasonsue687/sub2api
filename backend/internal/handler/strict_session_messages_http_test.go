@@ -265,7 +265,7 @@ func postStrictMessages(t *testing.T, h *GatewayHandler, group *service.Group, g
 	return postStrictMessagesWithAPIKey(t, h, group, groupID, zapLogger, metadataUserID, 3101)
 }
 
-func postStrictMessagesWithAPIKey(t *testing.T, h *GatewayHandler, group *service.Group, groupID int64, zapLogger *zap.Logger, metadataUserID string, apiKeyID int64) (*httptest.ResponseRecorder, int64) {
+func postStrictMessagesWithAPIKey(t *testing.T, h *GatewayHandler, group *service.Group, groupID int64, zapLogger *zap.Logger, metadataUserID string, apiKeyID int64, headers ...http.Header) (*httptest.ResponseRecorder, int64) {
 	t.Helper()
 	payload := map[string]any{
 		"model":      "claude-sonnet-4-5",
@@ -284,6 +284,13 @@ func postStrictMessagesWithAPIKey(t *testing.T, h *GatewayHandler, group *servic
 	c, _ := gin.CreateTestContext(rec)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	for _, extra := range headers {
+		for key, values := range extra {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
+	}
 	ctx := context.WithValue(req.Context(), ctxkey.Group, group)
 	if zapLogger != nil {
 		ctx = logger.IntoContext(ctx, zapLogger)

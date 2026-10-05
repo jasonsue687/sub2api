@@ -67,7 +67,10 @@ func (h *GatewayHandler) beginStrictClaudeMessages(
 		}
 	}
 	if rt != nil && rt.Active && rt.Plan != nil && sessionKey != nil && *sessionKey != rt.Plan.SessionID {
-		*sessionKey = rt.Plan.BindingKey
+		// Capacity registration, refresh and release must use the same ID for
+		// every identity source. Keep the raw ID used by existing metadata sessions;
+		// BindingKey is only the identity of the permanent database binding.
+		*sessionKey = rt.Plan.SessionID
 		groupID := int64(0)
 		if apiKey != nil {
 			groupID = derefGroupID(apiKey.GroupID)
