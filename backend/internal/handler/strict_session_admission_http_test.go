@@ -3,7 +3,9 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -106,5 +108,32 @@ func TestMessagesStrictAdmissionPreservesCreditOverages(t *testing.T) {
 		assert.Contains(t, rec.Body.String(), `"reason":"rate_limited"`)
 		assert.Zero(t, selected)
 		assert.Equal(t, account.ID, requireStrictStoreAccount(t, store, cfg, group.ID))
+	}
+}
+
+func TestMessagesStrictSessionLogsFingerprint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, sessionID := range []string{"secret7", "private-session-12345678"} {
+		t.Run(sessionID, func(t *testing.T) {
+			group := strictHTTPGroup(2101)
+			account := strictHTTPAccount(1101, group.ID, "bound")
+			cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeStandard}}
+			cfg.binding.Enabled = true
+			store := service.NewMemoryStrictSessionBindingStore()
+			repo := &strictMessagesAccountRepo{byID: map[int64]*service.Account{account.ID: account}}
+			h, cleanup := newStrictMessagesHandler(t, cfg, group, []*service.Account{account}, repo, store)
+			t.Cleanup(cleanup)
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+			defer slog.SetDefault(previous)
+			rec, selected := postStrictMessages(t, h, group, group.ID, nil, `{"session_id":"`+sessionID+`"}`)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Equal(t, account.ID, selected)
+			require.Contains(t, logs.String(), "sticky.scheduler_entry")
+			require.Contains(t, logs.String(), service.StrictSessionFingerprint(sessionID))
+			require.NotContains(t, logs.String(), sessionID)
+			require.NotContains(t, logs.String(), sessionID[:7])
+		})
 	}
 }

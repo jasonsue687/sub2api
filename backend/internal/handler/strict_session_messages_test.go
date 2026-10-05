@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -67,6 +68,25 @@ func TestStrictFailoverRetriesSameAccountThenStops(t *testing.T) {
 	require.Equal(t, FailoverExhausted, fs.HandleFailoverError(context.Background(), mock, 7, service.PlatformAnthropic, 5, err))
 	require.Equal(t, 0, fs.SwitchCount)
 	require.Empty(t, fs.FailedAccountIDs)
+}
+
+func TestStrictRetryCapPreservesAccountLimit(t *testing.T) {
+	for _, accountLimit := range []int{0, 1} {
+		t.Run(fmt.Sprintf("account_limit=%d", accountLimit), func(t *testing.T) {
+			fs := NewFailoverState(10, true)
+			fs.EnableStrictBinding(3)
+			upstreamErr := &service.UpstreamFailoverError{
+				StatusCode: http.StatusBadGateway, RetryableOnSameAccount: true,
+				SameAccountRetryDelay: time.Millisecond,
+			}
+			for attempt := 0; attempt < accountLimit; attempt++ {
+				require.Equal(t, FailoverContinue, fs.HandleFailoverError(context.Background(), &mockTempUnscheduler{}, 7, service.PlatformAnthropic, accountLimit, upstreamErr))
+			}
+			require.Equal(t, FailoverExhausted, fs.HandleFailoverError(context.Background(), &mockTempUnscheduler{}, 7, service.PlatformAnthropic, accountLimit, upstreamErr))
+			require.Equal(t, accountLimit, fs.SameAccountRetryCount[7])
+			require.Zero(t, fs.SwitchCount)
+		})
+	}
 }
 
 func TestDisabledStrictFailoverStillSwitches(t *testing.T) {

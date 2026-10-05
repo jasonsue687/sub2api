@@ -262,10 +262,9 @@ func shortSessionHash(sessionHash string) string {
 	if sessionHash == "" {
 		return ""
 	}
-	if len(sessionHash) <= 8 {
-		return sessionHash
-	}
-	return sessionHash[:8]
+	// Metadata and strict-session callers may supply a raw session ID. Never
+	// log the original value or its prefix, even when the ID is short.
+	return StrictSessionFingerprint(sessionHash)
 }
 
 func redactAuthHeaderValue(v string) string {

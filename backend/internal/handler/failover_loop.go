@@ -238,7 +238,7 @@ func (s *FailoverState) HandleFailoverError(
 		switch {
 		case s.strictSameAccountRetryLimit == 0:
 			retryLimit = 0
-		case s.strictSameAccountRetryLimit > 0 && (retryLimit <= 0 || s.strictSameAccountRetryLimit < retryLimit):
+		case s.strictSameAccountRetryLimit > 0 && s.strictSameAccountRetryLimit < retryLimit:
 			retryLimit = s.strictSameAccountRetryLimit
 		}
 	}
