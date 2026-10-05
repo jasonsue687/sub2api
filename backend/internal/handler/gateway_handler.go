@@ -667,7 +667,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	sessionSlotAccounts := make(map[int64]*service.Account)
 	upstreamServedSession := false
 	defer func() {
-		if upstreamServedSession {
+		// Strict requests share a permanent session identity. A failed request
+		// does not own the shared capacity member; let its idle timeout expire.
+		if upstreamServedSession || (strictRT != nil && strictRT.Active) {
 			return
 		}
 		// 客户端可能已断开、请求 ctx 已取消，用独立 ctx 执行释放
@@ -786,7 +788,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("model", reqModel),
 						zap.String("platform", platform),
 					)
-					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
 						return
 					}
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
@@ -801,7 +803,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 					)
-					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
 						return
 					}
 					h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", gatewayQueueFullCode, "Too many pending requests, please retry later", streamStarted)
@@ -828,7 +830,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if err != nil {
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
-					if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
+					if h.strictGiveUpAccount(c, strictRT, reqLog, account, "concurrency_exhausted", streamStarted, writerSizeAtEntry) {
 						return
 					}
 					h.handleConcurrencyError(c, err, "account", streamStarted)
@@ -845,7 +847,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					accountReleaseFunc()
 				}
 				reqLog.Debug("gateway.account_slot_profit_vetoed", zap.Int64("account_id", account.ID), zap.String("reason", reason))
-				if h.strictGiveUpAccount(c, strictRT, reqLog, account, sessionKey, "profit_control", streamStarted, writerSizeAtEntry) {
+				if h.strictGiveUpAccount(c, strictRT, reqLog, account, "profit_control", streamStarted, writerSizeAtEntry) {
 					return
 				}
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
@@ -1105,7 +1107,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
-					switch h.handleStrictUpstreamFailover(c, fs, strictRT, reqLog, account, failoverErr, sessionKey, streamStarted, writerSizeAtEntry, sessionSlotAccounts) {
+					switch h.handleStrictUpstreamFailover(c, fs, strictRT, reqLog, account, failoverErr, streamStarted, writerSizeAtEntry) {
 					case strictFlowStop:
 						return
 					case strictFlowSameAccount:

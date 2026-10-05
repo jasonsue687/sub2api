@@ -573,6 +573,15 @@ type strictHTTPSettingsRepo struct {
 func (r *strictHTTPSettingsRepo) GetAll(context.Context) (map[string]string, error) {
 	return r.values, r.err
 }
+func (r *strictHTTPSettingsRepo) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
+	values := make(map[string]string)
+	for _, key := range keys {
+		if value, ok := r.values[key]; ok {
+			values[key] = value
+		}
+	}
+	return values, r.err
+}
 func (r *strictHTTPSettingsRepo) GetValue(_ context.Context, key string) (string, error) {
 	value, ok := r.values[key]
 	if !ok {

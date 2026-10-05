@@ -5,6 +5,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -83,8 +84,8 @@ func TestMessagesStrictSessionCapacityAcrossIdentitySources(t *testing.T) {
 				assert.Contains(t, denied.Body.String(), `"reason":"session_capacity"`)
 				assert.Zero(t, selected)
 
-				// Fail after capacity admission and verify that the handler releases
-				// the same slot, even when identity came from an alternative source.
+				// A rejected duplicate must preserve the shared capacity member,
+				// even when identity came from an alternative source.
 				slots.full = true
 				account.Credentials["intercept_warmup_requests"] = false
 				failed, _ := postStrictMessagesWithAPIKey(t, h, group, group.ID, nil, source.metadata, 3101, source.headers)
@@ -92,9 +93,14 @@ func TestMessagesStrictSessionCapacityAcrossIdentitySources(t *testing.T) {
 				assert.Contains(t, failed.Body.String(), `"reason":"concurrency_exhausted"`)
 				count, err := sessions.GetActiveSessionCount(ctx, account.ID)
 				require.NoError(t, err)
-				assert.Zero(t, count, "failed admission must not leave a capacity slot behind")
+				assert.Equal(t, 1, count, "failed duplicate admission must not remove a shared session")
 				slots.full = false
 				account.Credentials["intercept_warmup_requests"] = true
+				stillDenied, _ := postStrictMessages(t, h, group, group.ID, nil, otherMetadata)
+				assert.Equal(t, http.StatusServiceUnavailable, stillDenied.Code)
+				assert.Contains(t, stillDenied.Body.String(), `"reason":"session_capacity"`)
+				// Simulate the existing idle timeout expiring before a new session.
+				delete(sessions.active, account.ID)
 				recovered, selected := postStrictMessages(t, h, group, group.ID, nil, otherMetadata)
 				assert.Equal(t, http.StatusOK, recovered.Code, recovered.Body.String())
 				assert.Equal(t, account.ID, selected)
@@ -142,4 +148,51 @@ func (c *strictCapacityConcurrencyCache) AcquireAccountSlot(context.Context, int
 
 func (c *strictCapacityConcurrencyCache) IncrementAccountWaitCount(context.Context, int64, int) (bool, error) {
 	return !c.full, nil
+}
+
+func TestMessagesStrictForwardFailurePreservesCapacity(t *testing.T) {
+	group := strictHTTPGroup(2302)
+	account := strictHTTPAccount(1, group.ID, "bound")
+	account.Platform = service.PlatformAnthropic
+	account.Credentials = map[string]any{"intercept_warmup_requests": false}
+	account.Extra["max_sessions"] = 1
+	sessions := &strictCapacitySessionCache{active: map[int64]map[string]struct{}{account.ID: {strictHTTPSessionID: {}}}}
+	slots := &strictProfitHTTPConcurrencyCache{onAcquire: func() {}}
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeStandard}, sessions: sessions, concurrency: service.NewConcurrencyService(slots)}
+	cfg.binding.Enabled = true
+	store := service.NewMemoryStrictSessionBindingStore()
+	h, cleanup := newStrictMessagesHandler(t, cfg, group, []*service.Account{account}, &strictMessagesAccountRepo{byID: map[int64]*service.Account{account.ID: account}}, store)
+	t.Cleanup(cleanup)
+	// Missing credentials fail locally before any upstream transport is called.
+	rec, _ := postStrictMessages(t, h, group, group.ID, nil, strictHTTPMetadata())
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"reason":"upstream_failed"`)
+	count, err := sessions.GetActiveSessionCount(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	require.Equal(t, 1, slots.releases)
+}
+
+func TestStrictRetryAndExhaustionPreserveCapacity(t *testing.T) {
+	group := strictHTTPGroup(2303)
+	account := strictHTTPAccount(1, group.ID, "bound")
+	account.Platform = service.PlatformAnthropic
+	account.Extra["max_sessions"] = 1
+	sessions := &strictCapacitySessionCache{active: map[int64]map[string]struct{}{account.ID: {strictHTTPSessionID: {}}}}
+	cfg := &strictMessagesTestConfig{Config: config.Config{RunMode: config.RunModeStandard}, sessions: sessions}
+	h, cleanup := newStrictMessagesHandler(t, cfg, group, []*service.Account{account}, &strictMessagesAccountRepo{byID: map[int64]*service.Account{account.ID: account}}, nil)
+	t.Cleanup(cleanup)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	fs := NewFailoverState(10, true)
+	fs.EnableStrictBinding(1)
+	rt := &strictSessionRuntime{Active: true}
+	upstreamErr := &service.UpstreamFailoverError{StatusCode: http.StatusBadGateway, RetryableOnSameAccount: true, SameAccountRetryDelay: time.Millisecond}
+	for _, want := range []int{strictFlowSameAccount, strictFlowStop} {
+		require.Equal(t, want, h.handleStrictUpstreamFailover(c, fs, rt, nil, account, upstreamErr, false, c.Writer.Size()))
+		count, err := sessions.GetActiveSessionCount(context.Background(), account.ID)
+		require.NoError(t, err)
+		require.Equal(t, 1, count)
+	}
 }

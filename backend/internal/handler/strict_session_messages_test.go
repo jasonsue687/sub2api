@@ -128,7 +128,7 @@ func TestStrictUpstreamFailureReturnsAccountUnavailable(t *testing.T) {
 			fs := NewFailoverState(10, true)
 			fs.EnableStrictBinding(0)
 			h := &GatewayHandler{}
-			action := h.handleStrictUpstreamFailover(c, fs, &strictSessionRuntime{Active: true}, nil, &service.Account{ID: 7, Platform: service.PlatformAnthropic}, &service.UpstreamFailoverError{StatusCode: status}, "bound", false, c.Writer.Size(), nil)
+			action := h.handleStrictUpstreamFailover(c, fs, &strictSessionRuntime{Active: true}, nil, &service.Account{ID: 7, Platform: service.PlatformAnthropic}, &service.UpstreamFailoverError{StatusCode: status}, false, c.Writer.Size())
 			require.Equal(t, strictFlowStop, action)
 			require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 			require.Equal(t, strictSessionErrorAccountUnavailable, rec.Header().Get(strictSessionErrorHeader))

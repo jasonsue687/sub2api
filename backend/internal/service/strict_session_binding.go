@@ -96,7 +96,6 @@ type StrictSessionSelector struct {
 	LoadAccount    func(ctx context.Context, accountID int64) (*Account, error)
 	BlockReason    func(ctx context.Context, account *Account) (string, bool)
 	Acquire        func(ctx context.Context, account *Account) (*AccountSelectionResult, error)
-	ReleaseSession func(ctx context.Context, account *Account)
 }
 
 // StrictBindingCache 是可选加速层。失败或未命中都必须回源数据库。
@@ -497,14 +496,13 @@ func (s *GatewayService) SelectStrictSessionAccount(
 			}
 			return s.acquireStrictBoundAccount(ctx, account)
 		},
-		ReleaseSession: func(ctx context.Context, account *Account) {
-			s.ReleaseAccountSession(ctx, account, sessionHash)
-		},
 	}
 	return selector.Select(ctx, plan, groupID)
 }
 
 // Select 实现严格绑定选号。已绑定的会话不会调用 OfficialSelect。
+// 会话容量登记由同一会话的并发请求共享，失败/竞争落败只释放本次并发槽；
+// 没有登记所有权时不能注销整个会话，保留既有空闲超时回收。
 func (s StrictSessionSelector) Select(ctx context.Context, plan *StrictSessionPlan, groupID *int64) (*AccountSelectionResult, error) {
 	if s.Store == nil {
 		return nil, fmt.Errorf("%w: store is not configured", ErrStrictSessionStore)
@@ -542,17 +540,14 @@ func (s StrictSessionSelector) Select(ctx context.Context, plan *StrictSessionPl
 	})
 	if err != nil {
 		releaseSelection(selected)
-		s.releaseSession(ctx, selected.Account)
 		return nil, fmt.Errorf("%w: write: %w", ErrStrictSessionStore, err)
 	}
 	if created == nil || created.AccountID <= 0 {
 		releaseSelection(selected)
-		s.releaseSession(ctx, selected.Account)
 		return nil, fmt.Errorf("%w: write returned an empty binding", ErrStrictSessionStore)
 	}
 	if created.AccountID != selected.Account.ID {
 		releaseSelection(selected)
-		s.releaseSession(ctx, selected.Account)
 		LogStrictSession(created.AccountID, plan.SessionFingerprint, "concurrent_winner", "origin_check")
 		return s.selectBound(ctx, created.AccountID)
 	}
@@ -580,12 +575,10 @@ func (s StrictSessionSelector) selectBound(ctx context.Context, accountID int64)
 		}
 	}
 	if s.Acquire == nil {
-		s.releaseSession(ctx, account)
 		return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: "concurrency_exhausted"}
 	}
 	selected, err := s.Acquire(ctx, account)
 	if err != nil {
-		s.releaseSession(ctx, account)
 		var fallback *StrictSessionAccountUnavailableError
 		if errors.As(err, &fallback) {
 			return nil, fallback
@@ -593,16 +586,9 @@ func (s StrictSessionSelector) selectBound(ctx context.Context, accountID int64)
 		return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: "concurrency_exhausted"}
 	}
 	if selected == nil || selected.Account == nil {
-		s.releaseSession(ctx, account)
 		return nil, &StrictSessionAccountUnavailableError{AccountID: accountID, Reason: "concurrency_exhausted"}
 	}
 	return selected, nil
-}
-
-func (s StrictSessionSelector) releaseSession(ctx context.Context, account *Account) {
-	if s.ReleaseSession != nil && account != nil {
-		s.ReleaseSession(ctx, account)
-	}
 }
 
 func releaseSelection(selected *AccountSelectionResult) {
@@ -700,7 +686,13 @@ func (s *GatewayService) acquireStrictBoundAccount(ctx context.Context, account 
 	result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
 	acquired := err == nil && result != nil && result.Acquired
 	if acquired {
-		return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+		selected, err := s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+		if err != nil && result.ReleaseFunc != nil {
+			// Hydration can fail after the slot was acquired (for example, on
+			// cancellation). No caller owns this slot until selection succeeds.
+			result.ReleaseFunc()
+		}
+		return selected, err
 	}
 	cfg := s.schedulingConfig()
 	waiting := 0

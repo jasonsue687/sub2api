@@ -164,7 +164,7 @@ func TestMessagesStrictProfitRecheckReleasesSlots(t *testing.T) {
 			assert.Equal(t, 1, slots.releases)
 			assert.Zero(t, slots.waiting)
 			assert.Equal(t, 1, sessions.registered)
-			assert.Equal(t, 1, sessions.released)
+			assert.Zero(t, sessions.released, "a profit veto must not delete a shared session member")
 			wantAttempts := 1
 			if wait {
 				wantAttempts = 2

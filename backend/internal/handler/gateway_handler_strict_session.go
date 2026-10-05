@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"context"
-
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -103,11 +101,10 @@ func (h *GatewayHandler) strictSelectFailureHandled(c *gin.Context, rt *strictSe
 	return h.handleStrictSelectFailure(c, rt, reqLog, err, streamStarted, writerSizeAtEntry) == strictFlowStop
 }
 
-func (h *GatewayHandler) strictGiveUpAccount(c *gin.Context, rt *strictSessionRuntime, reqLog *zap.Logger, account *service.Account, sessionKey, reason string, streamStarted bool, writerSizeAtEntry int) bool {
+func (h *GatewayHandler) strictGiveUpAccount(c *gin.Context, rt *strictSessionRuntime, reqLog *zap.Logger, account *service.Account, reason string, streamStarted bool, writerSizeAtEntry int) bool {
 	if !rt.locksAccount() || account == nil {
 		return false
 	}
-	h.releaseStrictBoundSession(account, sessionKey)
 	h.rejectStrictAccount(c, rt, reqLog, account.ID, reason, streamStarted, writerSizeAtEntry)
 	return true
 }
@@ -135,10 +132,8 @@ func (h *GatewayHandler) handleStrictUpstreamFailover(
 	reqLog *zap.Logger,
 	account *service.Account,
 	failoverErr *service.UpstreamFailoverError,
-	sessionKey string,
 	streamStarted bool,
 	writerSizeAtEntry int,
-	sessionSlotAccounts map[int64]*service.Account,
 ) int {
 	if rt == nil || !rt.Active || account == nil {
 		return strictFlowPassthrough
@@ -150,8 +145,6 @@ func (h *GatewayHandler) handleStrictUpstreamFailover(
 	action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
 	switch action {
 	case FailoverContinue:
-		h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
-		delete(sessionSlotAccounts, account.ID)
 		return strictFlowSameAccount
 	case FailoverExhausted:
 		// Deterministic request errors keep their original status/body. Capacity,

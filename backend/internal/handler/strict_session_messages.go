@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"errors"
 	"net/http"
 
@@ -206,13 +205,6 @@ func (h *GatewayHandler) respondStrictSessionError(c *gin.Context, status int, c
 	}
 	message := "Strict session binding blocked subscription-account reassignment (" + reason + ")"
 	h.handleStreamingAwareErrorWithCode(c, status, strictSessionErrorType, code, message, streamStarted, reason)
-}
-
-func (h *GatewayHandler) releaseStrictBoundSession(account *service.Account, sessionKey string) {
-	if h == nil || h.gatewayService == nil || account == nil {
-		return
-	}
-	h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionKey)
 }
 
 func (rt *strictSessionRuntime) fingerprint() string {
