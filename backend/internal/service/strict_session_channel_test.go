@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,7 +37,7 @@ func TestStrictBoundSessionHonorsChannelModelRestrictions(t *testing.T) {
 				channelService:     newTestChannelService(makeStandardRepo(channel, map[int64]string{gid: PlatformAnthropic})),
 				strictSessionStore: store,
 			}
-			ctx := context.Background()
+			ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{ID: gid, Platform: PlatformAnthropic, Status: StatusActive, Hydrated: true})
 			plan := &StrictSessionPlan{Active: true, BindingKey: "bound", RequestPlatform: PlatformAnthropic}
 			selected, err := svc.SelectStrictSessionAccount(ctx, plan, &gid, "bound", "claude-opus-4", nil, "", 0)
 			require.Nil(t, selected)
@@ -77,7 +78,8 @@ func TestStrictBoundSessionChecksMappedBillingModel(t *testing.T) {
 				channelService:     newTestChannelService(makeStandardRepo(channel, map[int64]string{gid: PlatformAnthropic})),
 				strictSessionStore: presetStore(t, "bound", account.ID),
 			}
-			selected, err := svc.SelectStrictSessionAccount(context.Background(), &StrictSessionPlan{Active: true, BindingKey: "bound", RequestPlatform: PlatformAnthropic}, &gid, "bound", "allowed-alias", nil, "", 0)
+			ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{ID: gid, Platform: PlatformAnthropic, Status: StatusActive, Hydrated: true})
+			selected, err := svc.SelectStrictSessionAccount(ctx, &StrictSessionPlan{Active: true, BindingKey: "bound", RequestPlatform: PlatformAnthropic}, &gid, "bound", "allowed-alias", nil, "", 0)
 			require.Nil(t, selected)
 			var unavailable *StrictSessionAccountUnavailableError
 			require.ErrorAs(t, err, &unavailable)

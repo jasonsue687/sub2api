@@ -306,7 +306,7 @@ func TestBoundSessionDoesNotSelectAnotherAccount(t *testing.T) {
 		},
 		LoadAccount: func(context.Context, int64) (*Account, error) { return account, nil },
 		BlockReason: func(ctx context.Context, got *Account) (string, bool) {
-			return svc.strictAccountBlockReason(ctx, got, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
+			return svc.strictAccountBlockReason(ctx, got, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false)
 		},
 		Acquire: func(_ context.Context, got *Account) (*AccountSelectionResult, error) {
 			require.Equal(t, int64(1), got.ID)
@@ -349,7 +349,7 @@ func TestBoundAccountUnavailableReasonsDoNotReselect(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			account := healthyStrictAccount(1, groupID)
 			tc.mutate(account)
-			reason, blocked := svc.strictAccountBlockReason(context.Background(), account, &groupID, "claude-opus-4-5", PlatformAnthropic, false, "sess")
+			reason, blocked := svc.strictAccountBlockReason(context.Background(), account, &groupID, "claude-opus-4-5", PlatformAnthropic, false)
 			require.True(t, blocked)
 			require.Equal(t, tc.reason, reason)
 		})
@@ -370,22 +370,12 @@ func TestBoundAccountUnavailableReasonsDoNotReselect(t *testing.T) {
 		require.Equal(t, int64(42), fallback.AccountID)
 	})
 
-	t.Run("session capacity", func(t *testing.T) {
-		account := healthyStrictAccount(3, groupID)
-		account.Type = AccountTypeOAuth
-		account.Extra = map[string]any{"max_sessions": 1}
-		svc := &GatewayService{sessionLimitCache: stubSessionLimitCache{reject: true}}
-		reason, blocked := svc.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
-		require.True(t, blocked)
-		require.Equal(t, "session_capacity", reason)
-	})
-
 	t.Run("window cost", func(t *testing.T) {
 		account := healthyStrictAccount(3, groupID)
 		account.Type = AccountTypeOAuth
 		account.Extra = map[string]any{"window_cost_limit": 1.0, "window_cost_sticky_reserve": 1.0}
 		svc := &GatewayService{sessionLimitCache: stubSessionLimitCache{windowHit: true, windowCost: 10}}
-		reason, blocked := svc.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
+		reason, blocked := svc.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false)
 		require.True(t, blocked)
 		require.Equal(t, "window_cost_exhausted", reason)
 	})
@@ -395,7 +385,7 @@ func TestBoundAccountUnavailableReasonsDoNotReselect(t *testing.T) {
 		account.Type = AccountTypeOAuth
 		account.Extra = map[string]any{"base_rpm": 1}
 		svc := &GatewayService{rpmCache: stubRPMCache{count: 100}}
-		reason, blocked := svc.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
+		reason, blocked := svc.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false)
 		require.True(t, blocked)
 		require.Equal(t, "rpm_exceeded", reason)
 	})
@@ -417,7 +407,7 @@ func TestAccountRecoveryReturnsToOriginalBinding(t *testing.T) {
 		},
 		LoadAccount: func(context.Context, int64) (*Account, error) { return account, nil },
 		BlockReason: func(ctx context.Context, got *Account) (string, bool) {
-			return svc.strictAccountBlockReason(ctx, got, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
+			return svc.strictAccountBlockReason(ctx, got, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false)
 		},
 		Acquire: func(_ context.Context, got *Account) (*AccountSelectionResult, error) {
 			return &AccountSelectionResult{Account: got, Acquired: true, ReleaseFunc: func() {}}, nil
@@ -481,11 +471,11 @@ func TestSimpleModeDoesNotPermanentlyRemoveForeignGroup(t *testing.T) {
 	groupID := int64(1)
 	account := healthyStrictAccount(3, 99)
 	simple := &GatewayService{cfg: &config.Config{RunMode: config.RunModeSimple}}
-	reason, blocked := simple.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
+	reason, blocked := simple.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false)
 	require.False(t, blocked, reason)
 
 	standard := &GatewayService{cfg: &config.Config{RunMode: config.RunModeStandard}}
-	reason, blocked = standard.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
+	reason, blocked = standard.strictAccountBlockReason(context.Background(), account, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false)
 	require.True(t, blocked)
 	require.Equal(t, "removed_from_pool", reason)
 }
@@ -494,19 +484,19 @@ func TestStrictPlatformMatchesOfficialSamePlatformFilter(t *testing.T) {
 	svc := &GatewayService{}
 	groupID := int64(1)
 	anthropic := healthyStrictAccount(2, groupID)
-	reason, blocked := svc.strictAccountBlockReason(context.Background(), anthropic, &groupID, "claude-sonnet-4-5", PlatformAntigravity, true, "sess")
+	reason, blocked := svc.strictAccountBlockReason(context.Background(), anthropic, &groupID, "claude-sonnet-4-5", PlatformAntigravity, true)
 	require.True(t, blocked)
 	require.Equal(t, "platform_mismatch", reason)
 
 	mixed := healthyStrictAccount(4, groupID)
 	mixed.Platform = PlatformAntigravity
 	mixed.Extra = map[string]any{"mixed_scheduling": true}
-	reason, blocked = svc.strictAccountBlockReason(context.Background(), mixed, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
+	reason, blocked = svc.strictAccountBlockReason(context.Background(), mixed, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false)
 	require.False(t, blocked, reason)
 
 	plain := healthyStrictAccount(5, groupID)
 	plain.Platform = PlatformAntigravity
-	reason, blocked = svc.strictAccountBlockReason(context.Background(), plain, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false, "sess")
+	reason, blocked = svc.strictAccountBlockReason(context.Background(), plain, &groupID, "claude-sonnet-4-5", PlatformAnthropic, false)
 	require.True(t, blocked)
 	require.Equal(t, "platform_mismatch", reason)
 }

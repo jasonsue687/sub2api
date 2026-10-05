@@ -453,6 +453,21 @@ func (s *GatewayService) SelectStrictSessionAccount(
 	if plan == nil || !plan.Active {
 		return nil, fmt.Errorf("%w: strict session plan is inactive", ErrStrictSessionStore)
 	}
+	// Resolve the current group without following its fallback chain. Request
+	// admission applies before both first assignment and existing-binding reuse.
+	if groupID != nil {
+		group, err := s.resolveGroupByID(ctx, *groupID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: current group: %w", ErrStrictSessionStore, err)
+		}
+		if !IsGroupContextValid(group) {
+			return nil, fmt.Errorf("%w: current group unavailable", ErrStrictSessionStore)
+		}
+		if !gatewayGroupAllowsClient(ctx, group, plan.ForcePlatform) {
+			return nil, &StrictSessionAccountUnavailableError{AccountID: plan.BoundAccountID, Reason: "claude_code_only"}
+		}
+		ctx = s.withGroupContext(ctx, group)
+	}
 	// Bound accounts skip ordinary selection, so install its profit gate here.
 	// Keep it on the selector context for concurrent winners and post-slot checks.
 	ctx = s.withGatewayProfitControlGate(ctx, groupID)
@@ -469,9 +484,17 @@ func (s *GatewayService) SelectStrictSessionAccount(
 			return s.accountRepo.GetByID(ctx, accountID)
 		},
 		BlockReason: func(ctx context.Context, account *Account) (string, bool) {
-			return s.strictAccountBlockReason(ctx, account, groupID, requestedModel, requestPlatform, plan.ForcePlatform, sessionHash)
+			// Threshold synchronization can update scheduler state; keep it outside
+			// the account checks, before registering sessions or acquiring slots.
+			if s.isAccountBlockedBySchedulingThreshold(ctx, account) {
+				return "scheduling_threshold", true
+			}
+			return s.strictAccountBlockReason(ctx, account, groupID, requestedModel, requestPlatform, plan.ForcePlatform)
 		},
 		Acquire: func(ctx context.Context, account *Account) (*AccountSelectionResult, error) {
+			if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+				return nil, &StrictSessionAccountUnavailableError{AccountID: account.ID, Reason: "session_capacity"}
+			}
 			return s.acquireStrictBoundAccount(ctx, account)
 		},
 		ReleaseSession: func(ctx context.Context, account *Account) {
@@ -588,7 +611,7 @@ func releaseSelection(selected *AccountSelectionResult) {
 	}
 }
 
-func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *Account, groupID *int64, requestedModel, requestPlatform string, hasForcePlatform bool, sessionHash string) (string, bool) {
+func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *Account, groupID *int64, requestedModel, requestPlatform string, hasForcePlatform bool) (string, bool) {
 	if account == nil {
 		return "account_deleted", true
 	}
@@ -600,6 +623,9 @@ func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *
 	if !s.strictPlatformAllowed(account, requestPlatform, hasForcePlatform) {
 		return "platform_mismatch", true
 	}
+	if !gatewayAccountMeetsPrivacyRequirement(s.groupFromContext(ctx, derefGroupID(groupID)), account) {
+		return "privacy_not_set", true
+	}
 	if !account.IsActive() || !account.Schedulable {
 		return "disabled", true
 	}
@@ -607,7 +633,7 @@ func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *
 	if account.AutoPauseOnExpired && account.ExpiresAt != nil && !now.Before(*account.ExpiresAt) {
 		return "authorization_invalid", true
 	}
-	if account.IsRateLimited() || account.GetRateLimitRemainingTimeWithContext(ctx, requestedModel) > 0 {
+	if account.IsRateLimited() {
 		return "rate_limited", true
 	}
 	if account.IsOverloaded() {
@@ -618,6 +644,10 @@ func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *
 	}
 	if !s.isAccountSchedulableForQuota(account) {
 		return "quota_exceeded", true
+	}
+	// Reuse the full model admission rule, including Antigravity credit overages.
+	if !s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) {
+		return "rate_limited", true
 	}
 	if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel) {
 		return "model_unsupported", true
@@ -637,14 +667,8 @@ func (s *GatewayService) strictAccountBlockReason(ctx context.Context, account *
 	if !s.isAccountSchedulableForRPM(ctx, account, true) {
 		return "rpm_exceeded", true
 	}
-	if s.isAccountBlockedBySchedulingThreshold(ctx, account) {
-		return "scheduling_threshold", true
-	}
 	if !account.IsSchedulable() {
 		return "unschedulable", true
-	}
-	if !s.checkAndRegisterSession(ctx, account, sessionHash) {
-		return "session_capacity", true
 	}
 	return "", false
 }

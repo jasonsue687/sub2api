@@ -51,8 +51,12 @@ func strictSettingsValues(cfg config.GatewayStrictSessionBindingConfig) map[stri
 	ApplyResolvedStrictSessionBinding(settings, cfg)
 	return strictSessionBindingUpdateMap(settings)
 }
-func expireStrictSettings(s *SettingService) {
-	cached := *s.strictSessionBindingCache.Load().(*cachedStrictSessionBinding)
+func expireStrictSettings(t *testing.T, s *SettingService) {
+	t.Helper()
+	value, ok := s.strictSessionBindingCache.Load().(*cachedStrictSessionBinding)
+	require.True(t, ok)
+	require.NotNil(t, value)
+	cached := *value
 	cached.expiresAt = 0
 	s.strictSessionBindingCache.Store(&cached)
 }
@@ -87,7 +91,7 @@ func TestStrictSettingsRefreshFailureRetainsWholePolicy(t *testing.T) {
 			s := NewSettingService(repo, nil)
 			before, err := s.StrictSessionBindingConfig(context.Background())
 			require.NoError(t, err)
-			expireStrictSettings(s)
+			expireStrictSettings(t, s)
 			repo.readErr = errors.New("database unavailable")
 			// Even if a partial result accompanies an error, none of it is trusted.
 			repo.values = map[string]string{SettingKeyStrictSessionBindingEnabled: "false"}
@@ -99,7 +103,7 @@ func TestStrictSettingsRefreshFailureRetainsWholePolicy(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 2, repo.reads, "failed refreshes back off instead of hitting storage for every request")
 			repo.readErr = nil
-			expireStrictSettings(s)
+			expireStrictSettings(t, s)
 			after, err = s.StrictSessionBindingConfig(context.Background())
 			require.NoError(t, err)
 			require.False(t, after.Enabled)
@@ -117,7 +121,7 @@ func TestStrictSettingsColdReadFailureAndRecovery(t *testing.T) {
 	require.ErrorIs(t, err, ErrStrictSessionConfigUnavailable)
 	require.Equal(t, 1, repo.reads)
 	repo.readErr = nil
-	expireStrictSettings(s)
+	expireStrictSettings(t, s)
 	cfg, err := s.StrictSessionBindingConfig(context.Background())
 	require.NoError(t, err)
 	require.True(t, cfg.Enabled)
