@@ -17,9 +17,12 @@
 - 单条 user 消息 `Warmup`。
 - 旧的 `Please write a 5-10 word title for the following conversation:` 模板。
 - 旧的 system 新主题/2–3 词标题分析模板。
+- 桌面标题直连：Haiku 模型、`max_tokens=200`，system 完整匹配 `You write short session titles. Reply with only the tagged fields the prompt asks for.`（忽略空白格式差异），且只有一条非空纯文本 user 消息、没有工具声明或工具选择。system 和 content 支持字符串或显式 text 块数组；不依赖 user 正文的开头措辞。该新增规则不覆盖 Opus 或 CLI 回退的请求结构。
 - 单条 user 消息以生成标题指令开头，要求 2–5 个词，包含 `<description>…</description>` 和 `<title>…</title>` 输出约定，并与标题/助手 system 提示相符。正文引用或解释模板不会因包含 `title` 一词而被拦截。
 
 Mock 为 XML 模板返回 `<title>New Conversation</title>`，为旧主题分析模板返回 JSON，其余预热返回 `New Conversation`；Mock 不记录付费 token。SuggestionMode 和 Haiku 连通性探测保持各自的原有拦截路径，分别返回空文本和 `#`，不会调用标题转发模型。
+
+桌面标题直连在 Mock 模式返回 `<title>New Conversation</title>`，不生成分支名。转发模式保留第三方返回的标签文本，包括可选的 `<branch>` 字段，不将整个结果再次包成一个 `<title>`；第三方须遵循请求中的标签输出约定。
 
 转发只发送必要的 system、文本消息、输出上限和配置的模型，不携带入站认证、metadata、会话头或订阅账号凭据。支持 OpenAI Chat Completions 和 Anthropic Messages 兼容接口。输出最多 1024 tokens，上游响应最多 1 MiB。
 
