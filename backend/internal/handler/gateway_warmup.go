@@ -18,6 +18,58 @@ import (
 var warmupTitleInstruction = regexp.MustCompile(`(?i)^(?:please\s+)?(?:generate|write|create|provide)\b[^\n<]{0,180}\btitle\b`)
 var warmupTitleWordCount = regexp.MustCompile(`(?i)\b2\s*[-–—]\s*5\s+words?\b`)
 
+const desktopTitleSystem = "You write short session titles. Reply with only the tagged fields the prompt asks for."
+
+// isDesktopTitleWarmup recognizes the desktop's direct one-shot request, not
+// its CLI fallback. The fixed system identifies the task; user text may vary.
+func isDesktopTitleWarmup(body []byte, model string, maxTokens int) bool {
+	if !isHaikuModel(model) || maxTokens != 200 {
+		return false
+	}
+	var req struct {
+		service.WarmupRequest
+		Tools      []json.RawMessage `json:"tools"`
+		ToolChoice json.RawMessage   `json:"tool_choice"`
+	}
+	if json.Unmarshal(body, &req) != nil || len(req.Messages) != 1 || req.Messages[0].Role != "user" || len(req.Tools) != 0 {
+		return false
+	}
+	if choice := strings.TrimSpace(string(req.ToolChoice)); choice != "" && choice != "null" {
+		return false
+	}
+	system, ok := desktopTitleText(req.System)
+	if !ok || strings.Join(strings.Fields(system), " ") != desktopTitleSystem {
+		return false
+	}
+	_, ok = desktopTitleText(req.Messages[0].Content)
+	return ok
+}
+
+// desktopTitleText accepts nonempty text strings or explicitly typed text blocks.
+// Keep the stricter shape checks local so legacy warmup recognition is unchanged.
+func desktopTitleText(raw json.RawMessage) (string, bool) {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text, strings.TrimSpace(text) != ""
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil || len(blocks) == 0 {
+		return "", false
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != "text" {
+			return "", false
+		}
+		parts = append(parts, block.Text)
+	}
+	text = strings.Join(parts, "\n")
+	return text, strings.TrimSpace(text) != ""
+}
+
 func parseWarmupText(body []byte) (system, text string, singleUser bool) {
 	var req service.WarmupRequest
 	if json.Unmarshal(body, &req) != nil || len(req.Messages) != 1 || req.Messages[0].Role != "user" {
@@ -66,6 +118,10 @@ func (h *GatewayHandler) handleEarlyWarmup(c *gin.Context, apiKey *service.APIKe
 	result := &service.WarmupResult{Text: "New Conversation", StopReason: "end_turn"}
 	var source service.WarmupRequest
 	_ = json.Unmarshal(body, &source)
+	desktopTitle := isDesktopTitleWarmup(body, model, source.MaxTokens)
+	if desktopTitle {
+		result.Text = "<title>New Conversation</title>"
+	}
 	system, _ := service.WarmupText(source.System)
 	if strings.Contains(system, "nalyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title") {
 		result.Text = `{"isNewTopic":true,"title":"New Conversation"}`
@@ -109,7 +165,9 @@ func (h *GatewayHandler) handleEarlyWarmup(c *gin.Context, apiKey *service.APIKe
 			}
 		})
 	}
-	if isXMLTitleWarmup(body) {
+	// Desktop instructions specify their tagged fields. Preserve the forwarded
+	// result, including optional branch tags, rather than wrapping all of it.
+	if !desktopTitle && isXMLTitleWarmup(body) {
 		title := strings.TrimSpace(result.Text)
 		title = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(title, "<title>"), "</title>"))
 		// Always return one XML title, escaping any upstream markup.

@@ -2368,6 +2368,9 @@ func detectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeC
 	if systemOK && len(req.Messages) > 0 && strings.Contains(system, "nalyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title") {
 		return InterceptTypeWarmup
 	}
+	if isDesktopTitleWarmup(body, model, maxTokens) {
+		return InterceptTypeWarmup
+	}
 	_, text, singleUser := parseWarmupText(body)
 	if singleUser && (text == "Warmup" || isXMLTitleWarmup(body)) {
 		return InterceptTypeWarmup
