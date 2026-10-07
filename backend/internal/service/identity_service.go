@@ -160,7 +160,8 @@ type IdentityCache interface {
 
 // IdentityService 管理OAuth账号的请求身份指纹
 type IdentityService struct {
-	cache IdentityCache
+	cache    IdentityCache
+	registry AccountFingerprintStore
 }
 
 // NewIdentityService 创建新的IdentityService
@@ -249,11 +250,7 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 			"Rejected fingerprint user-agent for account %d: %q (malformed or implausible version)",
 			accountID, clientUA)
 	}
-	fp := s.createFingerprintFromHeaders(headers)
-
-	// 生成随机ClientID
-	fp.ClientID = generateClientID()
-	fp.UpdatedAt = time.Now().Unix()
+	fp := s.createNewFingerprintFromHeaders(headers)
 
 	// 保存到缓存（7天TTL，每24小时自动续期）
 	if err := s.cache.SetFingerprint(ctx, accountID, fp); err != nil {
@@ -262,6 +259,15 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 
 	logger.LegacyPrintf("service.identity", "Created new fingerprint for account %d with client_id: %s", accountID, fp.ClientID)
 	return fp, nil
+}
+
+// Shared creation path for the existing cache and the observation registry.
+// Registration never writes its result back to the identity cache.
+func (s *IdentityService) createNewFingerprintFromHeaders(headers http.Header) *Fingerprint {
+	fp := s.createFingerprintFromHeaders(headers)
+	fp.ClientID = generateClientID()
+	fp.UpdatedAt = time.Now().Unix()
+	return fp
 }
 
 // createFingerprintFromHeaders 从请求头创建指纹

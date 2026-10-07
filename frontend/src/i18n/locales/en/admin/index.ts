@@ -1,3 +1,4 @@
+import fingerprints from './fingerprints'
 import anthropicRequests from './anthropicRequests'
 import anthropicOutbound from './anthropicOutbound'
 import overview from './overview'
@@ -11,6 +12,7 @@ import promptAudit from './promptAudit'
 import plugins from './plugins'
 
 export default {
+  ...fingerprints,
   ...anthropicRequests,
   ...anthropicOutbound,
   ...overview,

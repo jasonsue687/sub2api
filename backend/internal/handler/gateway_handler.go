@@ -168,6 +168,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 	body = parsedReq.Body.Bytes()
+	h.gatewayService.RecordIncomingFingerprint(c.Request.Context(), c.Request.Header, parsedReq.MetadataUserID)
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
 
@@ -2240,6 +2241,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 	body = parsedReq.Body.Bytes()
+	h.gatewayService.RecordIncomingFingerprint(c.Request.Context(), c.Request.Header, parsedReq.MetadataUserID)
 	// count_tokens 走 messages 严格校验时，复用已解析请求，避免二次反序列化。
 	SetClaudeCodeClientContext(c, body, parsedReq)
 	ensureCompositeTargetPlatform(c, apiKey, parsedReq.Model)
