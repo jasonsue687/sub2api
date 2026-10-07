@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [asterflow]
   workflow_dispatch:
+    inputs:
+      skip_checks:
+        description: 'Use completed local validation and skip GitHub CI (explicit operator approval required)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -16,7 +21,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.repository == 'jasonsue687/sub2api'
+    if: github.repository == 'jasonsue687/sub2api' && !(github.event_name == 'workflow_dispatch' && inputs.skip_checks)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -62,7 +67,11 @@ jobs:
 
   image:
     needs: verify
-    if: github.repository == 'jasonsue687/sub2api' && github.ref == 'refs/heads/asterflow' && github.event_name != 'pull_request'
+    if: >-
+      always() && !cancelled() && github.repository == 'jasonsue687/sub2api' &&
+      github.ref == 'refs/heads/asterflow' && github.event_name != 'pull_request' &&
+      (needs.verify.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && inputs.skip_checks && needs.verify.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

@@ -191,3 +191,37 @@ func TestWarmupUsageVariantsAndMalformedResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveWarmupAccountHydratesSchedulerMetadata(t *testing.T) {
+	groupID := int64(2)
+	full := &Account{ID: 13, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 1, AccountGroups: []AccountGroup{{AccountID: 13, GroupID: groupID}}, Credentials: warmupCredentials()}
+	metadata := *full
+	metadata.Credentials = nil // Production scheduler lists omit all warmup credentials.
+	cache := &snapshotHydrationCache{snapshot: []*Account{&metadata}, accounts: map[int64]*Account{13: full}}
+	svc := &GatewayService{schedulerSnapshot: NewSchedulerSnapshotService(cache, nil, nil, nil, nil)}
+	ctx := svc.withGroupContext(context.Background(), &Group{ID: groupID, Platform: PlatformAnthropic, ClaudeCodeOnly: true, Status: StatusActive, Hydrated: true})
+	got, err := svc.ResolveWarmupAccount(ctx, &groupID, "claude-haiku-4-5-20251001", true)
+	require.NoError(t, err)
+	require.Same(t, full, got)
+	require.Equal(t, "test-only-secret", WarmupConfigFromCredentials(got.Credentials).APIKey)
+	for _, test := range []struct {
+		name string
+		edit func(*Account)
+	}{
+		{"disabled", func(a *Account) { a.Credentials["intercept_warmup_requests"] = false }},
+		{"inactive", func(a *Account) { a.Status = StatusError }},
+		{"unschedulable", func(a *Account) { a.Schedulable = false }},
+		{"moved group", func(a *Account) { a.AccountGroups = []AccountGroup{{GroupID: 3}} }},
+		{"different platform", func(a *Account) { a.Platform = PlatformOpenAI }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := *full
+			changed.Credentials = warmupCredentials()
+			test.edit(&changed)
+			cache.accounts[13] = &changed
+			got, err := svc.ResolveWarmupAccount(ctx, &groupID, "claude-haiku-4-5-20251001", true)
+			require.NoError(t, err)
+			require.Nil(t, got)
+		})
+	}
+}

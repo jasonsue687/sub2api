@@ -114,7 +114,13 @@ func (s *GatewayService) ResolveWarmupAccount(ctx context.Context, groupID *int6
 	}
 	var selected *Account
 	for i := range accounts {
-		a := &accounts[i]
+		// Scheduler lists contain metadata only and intentionally omit warmup
+		// settings and secrets. Read the full account before testing the switch,
+		// then apply admission checks to that same hydrated configuration.
+		a, err := s.hydrateSelectedAccount(ctx, &accounts[i])
+		if err != nil {
+			return nil, err
+		}
 		if !a.IsInterceptWarmupEnabled() || a.Status != StatusActive || !a.Schedulable || !s.isAccountInGroup(a, scopedGroupID) || !s.isModelSupportedByAccountWithContext(ctx, a, model) || s.isStickyAccountUpstreamRestricted(ctx, scopedGroupID, a, model) {
 			continue
 		}
