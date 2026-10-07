@@ -3,11 +3,9 @@
     <div class="space-y-5">
       <header class="flex flex-wrap items-start justify-between gap-3">
         <div><h1 class="text-2xl font-semibold">{{ t('admin.fingerprints.title') }}</h1><p class="mt-2 text-sm text-gray-500">{{ t('admin.fingerprints.description') }}</p></div>
-        <button class="btn btn-secondary" :disabled="importing" @click="importCache">{{ t('admin.fingerprints.importCache') }}</button>
       </header>
       <p class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">{{ t('admin.fingerprints.stagedNotice') }}</p>
       <p v-if="error" role="alert" class="text-sm text-red-600">{{ error }}</p>
-      <p v-if="importResult" role="status" class="text-sm">{{ t('admin.fingerprints.importResult', importResult) }}</p>
       <form class="flex flex-wrap gap-3" @submit.prevent="page = 1; load()">
         <input v-model="search" class="input w-full sm:w-80" :placeholder="t('admin.fingerprints.search')" :aria-label="t('admin.fingerprints.search')" />
         <select v-model="source" class="input" :aria-label="t('admin.fingerprints.source')"><option value="">{{ t('admin.fingerprints.allSources') }}</option><option value="request">{{ t('admin.fingerprints.request') }}</option><option value="cache">{{ t('admin.fingerprints.cache') }}</option></select>
@@ -46,7 +44,7 @@ import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import FingerprintBindingModal from '@/components/account/FingerprintBindingModal.vue'
-import { importCachedFingerprints, listFingerprints, type FingerprintAccount, type FingerprintRecord } from '@/api/admin/accountFingerprints'
+import { listFingerprints, type FingerprintAccount, type FingerprintRecord } from '@/api/admin/accountFingerprints'
 const { t } = useI18n()
 const originKeys = { client: 'admin.fingerprints.origin_client', generated: 'admin.fingerprints.origin_generated', cache: 'admin.fingerprints.origin_cache' } as const
 const items = ref<FingerprintRecord[]>([])
@@ -55,9 +53,7 @@ const page = ref(1)
 const search = ref('')
 const source = ref('')
 const loading = ref(false)
-const importing = ref(false)
 const error = ref('')
-const importResult = ref<{ imported: number; missing: number; failed: number } | null>(null)
 const showBinding = ref(false)
 const bindingAccount = ref<FingerprintAccount | null>(null)
 const bindingFingerprint = ref<FingerprintRecord | null>(null)
@@ -72,13 +68,6 @@ async function load() {
     if (run === request) { items.value = result.items; total.value = result.total }
   } catch { if (run === request) error.value = t('admin.fingerprints.loadFailed') }
   finally { if (run === request) loading.value = false }
-}
-async function importCache() {
-  importing.value = true
-  error.value = ''
-  try { importResult.value = await importCachedFingerprints(); await load() }
-  catch { error.value = t('admin.fingerprints.importFailed') }
-  finally { importing.value = false }
 }
 onMounted(load)
 </script>

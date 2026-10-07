@@ -11,13 +11,13 @@
 - 相同来源、入站字段及标准化身份去重，累计请求次数和首次/最近登记时间。设备、UA、OS、SDK 等真实变化会形成另一条不可变快照。
 - 不保存会话 ID、metadata 原文、客户端 account UUID、消息正文、凭据、Cookie 或 beta 能力头。登记错误只记录日志，最多等待 250 ms，不改变请求的准入或选择结果；数据库故障期间计数可能不完整。
 
-## 缓存导入
+## 首次上线的数据导入
 
-启动时自动读取所有未删除的 Anthropic OAuth 账号现有 Redis 指纹；登记页面也提供“导入现有缓存身份”按钮。导入复用 `IdentityCache.GetFingerprint`，不调用 `GetOrCreateFingerprint`。
+现有账号缓存身份仅在本功能首次上线时由运维执行一次性导入。应用启动、管理页面和 API 均不提供缓存导入能力，后续重启或发布不会重复扫描 Redis。
 
-导入保留全部身份字段和 ClientID，只排除 Redis 的 UpdatedAt 元数据；不会续期、修改或删除缓存，不会生成替代设备标识，不会自动绑定账号。重复导入幂等，新的缓存身份另行登记。无缓存计为跳过，损坏或读取失败单独计数；设置 30 秒操作超时，Redis I/O 同时受既有读写超时配置约束，未完成时可以重试。
+一次性操作复用既有 `IdentityCache.GetFingerprint` 读取所有未删除的 Anthropic OAuth 账号缓存，并通过登记仓库写入快照。保留全部身份字段和 ClientID，只排除 Redis 的 UpdatedAt 元数据；不调用 `GetOrCreateFingerprint`，不续期、修改或删除缓存，不生成替代设备标识，也不自动绑定账号。无缓存账号跳过，读取失败单独报告，导入结果在发布验收中记录。
 
-SQL 迁移：[`251_account_fingerprint_registry.sql`](../backend/migrations/251_account_fingerprint_registry.sql)。迁移只创建表；Redis 数据由应用启动时和管理端导入，不依赖 SQL 访问 Redis。
+SQL 迁移：[`251_account_fingerprint_registry.sql`](../backend/migrations/251_account_fingerprint_registry.sql)。迁移仅创建表；一次性导入在迁移完成后执行，不依赖 SQL 访问 Redis。
 
 ## 绑定管理
 
@@ -36,7 +36,6 @@ SQL 迁移：[`251_account_fingerprint_registry.sql`](../backend/migrations/251_
 | GET | `/api/v1/admin/account-fingerprints` | 分页查询，支持 search、source |
 | GET | `/api/v1/admin/account-fingerprints/:id` | 完整指纹记录及绑定账号 |
 | GET | `/api/v1/admin/account-fingerprints/accounts` | 搜索可绑定订阅账号及当前绑定 ID |
-| POST | `/api/v1/admin/account-fingerprints/import-cache` | 幂等导入现有缓存 |
 | GET | `/api/v1/admin/accounts/:id/fingerprint-binding` | 读取绑定，`applied=false` |
 | PUT | `/api/v1/admin/accounts/:id/fingerprint-binding` | `fingerprint_id` 为正整数；显式 null 解除绑定 |
 
@@ -44,7 +43,7 @@ SQL 迁移：[`251_account_fingerprint_registry.sql`](../backend/migrations/251_
 
 后端回归覆盖复用生成逻辑、身份去重、会话不参与去重、登记故障不改变原有选择，以及 messages/count_tokens 在普通和 mimic 模式下的最终出站身份不变。
 
-真实 PostgreSQL 测试读取 `FINGERPRINT_TEST_DSN`（PostgreSQL URL），在独立临时 schema 内应用真实迁移，验证并发首次登记、计数、缓存导入幂等性、缓存不被修改、绑定切换/解除及非法账号保护。未设置该变量时跳过真实数据库测试。
+真实 PostgreSQL 测试读取 `FINGERPRINT_TEST_DSN`（PostgreSQL URL），在独立临时 schema 内应用真实迁移，验证并发首次登记、计数、绑定切换/解除、绑定不修改现有缓存及非法账号保护。未设置该变量时跳过真实数据库测试。
 
 ```sh
 cd backend

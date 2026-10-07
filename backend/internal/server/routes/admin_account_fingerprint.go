@@ -12,7 +12,6 @@ func registerAccountFingerprintRoutes(admin *gin.RouterGroup, h *handler.Handler
 	registry := admin.Group("/account-fingerprints")
 	registry.GET("", h.Admin.AccountFingerprint.List)
 	registry.GET("/accounts", h.Admin.AccountFingerprint.Accounts)
-	registry.POST("/import-cache", h.Admin.AccountFingerprint.ImportCache)
 	registry.GET("/:id", h.Admin.AccountFingerprint.Get)
 	admin.GET("/accounts/:id/fingerprint-binding", h.Admin.AccountFingerprint.Binding)
 	admin.PUT("/accounts/:id/fingerprint-binding", h.Admin.AccountFingerprint.Bind)

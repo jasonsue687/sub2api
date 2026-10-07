@@ -122,7 +122,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	ollamaCloudUsageService := service.ProvideOllamaCloudUsageService(accountRepository, httpUpstream, settingService, secretEncryptor, configConfig, leaderLockCache, db)
 	rateLimitService := service.ProvideRateLimitService(accountRepository, usageLogRepository, configConfig, geminiQuotaService, tempUnschedCache, timeoutCounterCache, openAI403CounterCache, settingService, compositeTokenCacheInvalidator, ollamaCloudUsageService)
 	identityCache := repository.NewIdentityCache(redisClient)
-	accountFingerprintStore := repository.NewAccountFingerprintRepository(db, redisClient)
+	accountFingerprintStore := repository.NewAccountFingerprintRepository(db)
 	identityService := service.ProvideIdentityService(identityCache, accountFingerprintStore)
 	timingWheelService, err := service.ProvideTimingWheelService()
 	if err != nil {

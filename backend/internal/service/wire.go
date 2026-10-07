@@ -36,12 +36,6 @@ type BuildInfo struct {
 func ProvideIdentityService(cache IdentityCache, registry AccountFingerprintStore) *IdentityService {
 	svc := NewIdentityService(cache)
 	svc.registry = registry
-	// Backfill snapshots before serving traffic. Missing entries are skipped;
-	// failures are visible and can be retried from the administrative page.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	result, err := registry.ImportCache(ctx)
-	logger.LegacyPrintf("service.identity", "Fingerprint cache import: result=%+v error=%v", result, err)
 	return svc
 }
 

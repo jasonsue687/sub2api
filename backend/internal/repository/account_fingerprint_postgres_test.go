@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
@@ -52,7 +51,7 @@ func TestAccountFingerprintRegistryPostgres(t *testing.T) {
 	mini := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
-	repo := NewAccountFingerprintRepository(db, rdb)
+	repo := NewAccountFingerprintRepository(db)
 
 	t.Run("concurrent observations preserve one identity and count every request", func(t *testing.T) {
 		const count = 8
@@ -86,40 +85,12 @@ func TestAccountFingerprintRegistryPostgres(t *testing.T) {
 		assert.Equal(t, int64(count+1), stored.RequestCount)
 	})
 
-	t.Run("cache backfill preserves full identity and never regenerates or refreshes cache", func(t *testing.T) {
-		fp := &service.Fingerprint{ClientID: "cached-device", UserAgent: "claude-cli/2.1.100 (external, local-agent)", StainlessLang: "js", StainlessOS: "Windows", StainlessArch: "x64", StainlessPackageVersion: "0.127.0", StainlessRuntime: "node", StainlessRuntimeVersion: "v24.3.0", UpdatedAt: 100}
-		cache := NewIdentityCache(rdb)
-		require.NoError(t, cache.SetFingerprint(ctx, 14, fp))
-		require.NoError(t, rdb.Set(ctx, fingerprintKey(16), "invalid", time.Hour).Err())
-		before, err := rdb.Get(ctx, fingerprintKey(14)).Result()
-		require.NoError(t, err)
-		ttl, err := rdb.TTL(ctx, fingerprintKey(14)).Result()
-		require.NoError(t, err)
-		for range 2 {
-			result, err := repo.ImportCache(ctx)
-			require.NoError(t, err)
-			assert.Equal(t, 1, result.Imported)
-			assert.Equal(t, 2, result.Missing)
-			assert.Equal(t, 1, result.Failed)
-		}
-		items, total, err := repo.List(ctx, 1, 20, "", "cache")
-		require.NoError(t, err)
-		require.Equal(t, int64(1), total)
-		require.Len(t, items, 1)
-		want := *fp
-		want.UpdatedAt = 0
-		assert.Equal(t, want, items[0].Fingerprint)
-		assert.Zero(t, items[0].RequestCount)
-		after, err := rdb.Get(ctx, fingerprintKey(14)).Result()
-		require.NoError(t, err)
-		assert.Equal(t, before, after)
-		afterTTL, err := rdb.TTL(ctx, fingerprintKey(14)).Result()
-		require.NoError(t, err)
-		assert.Equal(t, ttl, afterTTL)
-		assert.False(t, mini.Exists(fingerprintKey(15)))
-	})
-
 	t.Run("both management views share binding and invalid changes preserve it", func(t *testing.T) {
+		require.NoError(t, NewIdentityCache(rdb).SetFingerprint(ctx, 14, &service.Fingerprint{ClientID: "cached-device", UserAgent: "claude-cli/2.1.100"}))
+		require.NoError(t, repo.Observe(ctx, &service.FingerprintRecord{
+			Key: "second-incoming-identity", Source: "request", ClientIDOrigin: "client", RequestCount: 1,
+			Fingerprint: service.Fingerprint{ClientID: "second-device", UserAgent: "claude-cli/2.1.284"},
+		}))
 		items, total, err := repo.List(ctx, 1, 20, "", "")
 		require.NoError(t, err)
 		require.Equal(t, int64(2), total)
