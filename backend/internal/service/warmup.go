@@ -237,7 +237,7 @@ func forwardWarmup(ctx context.Context, cfg WarmupConfig, body []byte) (*WarmupR
 		}
 		return nil, errors.New("warmup upstream connection failed")
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("warmup upstream returned HTTP %d", response.StatusCode)
 	}

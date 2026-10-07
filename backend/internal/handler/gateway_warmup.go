@@ -146,7 +146,11 @@ func sendWarmupResult(c *gin.Context, model string, stream bool, result *service
 			return
 		}
 		data, _ := json.Marshal(event)
-		if _, err := c.Writer.WriteString("event: " + event["type"].(string) + "\ndata: " + string(data) + "\n\n"); err != nil {
+		eventType, ok := event["type"].(string)
+		if !ok {
+			return
+		}
+		if _, err := c.Writer.WriteString("event: " + eventType + "\ndata: " + string(data) + "\n\n"); err != nil {
 			return
 		}
 		c.Writer.Flush()
