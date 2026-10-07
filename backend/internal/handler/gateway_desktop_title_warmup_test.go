@@ -113,6 +113,7 @@ func TestDesktopTitleRouting(t *testing.T) {
 			}))
 			defer server.Close()
 			group := strictHTTPGroup(911)
+			group.ClaudeCodeOnly = true
 			account := strictHTTPAccount(1, group.ID, "desktop-title")
 			account.Credentials = map[string]any{"intercept_warmup_requests": true, "warmup_mode": mode, "warmup_protocol": "openai", "warmup_base_url": server.URL, "warmup_api_key": "test-secret", "warmup_model": "claude-haiku-4-5"}
 			logs := &warmupUsageRepo{}
@@ -170,12 +171,25 @@ func TestDesktopTitleRouting(t *testing.T) {
 			} else {
 				assert.Zero(t, calls)
 			}
+			// The auxiliary exception must not relax Claude-Code-only admission
+			// for legacy warmups or ordinary conversations.
+			legacy := postWarmup(t, h, group, titleBody(titleTemplate, false, false), false)
+			assert.Equal(t, http.StatusServiceUnavailable, legacy.Code)
+			assert.Contains(t, legacy.Body.String(), "warmup_configuration_error")
+			ordinary := postWarmup(t, h, group, titleBody("Help me write a program", false, false), false)
+			assert.Equal(t, http.StatusBadRequest, ordinary.Code)
+			assert.Contains(t, ordinary.Body.String(), "strict_session_id_required")
 			account.Credentials["intercept_warmup_requests"] = false
 			body, err := json.Marshal(desktopTitleRequest())
 			require.NoError(t, err)
 			rec := postWarmup(t, h, group, body, false)
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
 			assert.Contains(t, rec.Body.String(), "strict_session_id_required")
+			if mode == "forward" {
+				assert.Equal(t, 4, calls, "rejected requests must not call the external provider")
+			} else {
+				assert.Zero(t, calls)
+			}
 		})
 	}
 }

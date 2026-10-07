@@ -81,10 +81,22 @@ func ValidateWarmupCredentials(credentials map[string]any) error {
 }
 
 // ResolveWarmupAccount only reads configuration: no selection, sticky binding, RPM,
-// account concurrency or session-capacity registration. Enabled configurations in
-// the authorized scheduling scope use ascending priority, then ascending ID.
-func (s *GatewayService) ResolveWarmupAccount(ctx context.Context, groupID *int64, model string) (*Account, error) {
-	group, scopedGroupID, err := s.checkClaudeCodeRestriction(ctx, groupID)
+// account concurrency or session-capacity registration. A narrowly classified
+// desktop title may read its own group's auxiliary configuration even when the
+// subscription pool requires Claude Code. This does not establish client identity
+// or allow ordinary account scheduling. Other warmups retain client restrictions.
+// Enabled configurations use ascending priority, then ascending ID.
+func (s *GatewayService) ResolveWarmupAccount(ctx context.Context, groupID *int64, model string, desktopTitle bool) (*Account, error) {
+	var group *Group
+	var err error
+	scopedGroupID := groupID
+	if desktopTitle {
+		if groupID != nil {
+			group, err = s.resolveGroupByID(ctx, *groupID)
+		}
+	} else {
+		group, scopedGroupID, err = s.checkClaudeCodeRestriction(ctx, groupID)
+	}
 	if err != nil {
 		return nil, err
 	}
