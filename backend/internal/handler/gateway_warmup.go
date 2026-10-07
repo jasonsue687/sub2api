@@ -102,7 +102,10 @@ func isXMLTitleWarmup(body []byte) bool {
 // handleEarlyWarmup runs after user concurrency, security and billing admission,
 // before strict identity resolution and account/session selection.
 func (h *GatewayHandler) handleEarlyWarmup(c *gin.Context, apiKey *service.APIKey, subscription *service.UserSubscription, body []byte, model string, stream, streamStarted bool, pricingAt time.Time) bool {
-	account, err := h.gatewayService.ResolveWarmupAccount(c.Request.Context(), apiKey.GroupID, model)
+	var source service.WarmupRequest
+	_ = json.Unmarshal(body, &source)
+	desktopTitle := isDesktopTitleWarmup(body, model, source.MaxTokens)
+	account, err := h.gatewayService.ResolveWarmupAccount(c.Request.Context(), apiKey.GroupID, model, desktopTitle)
 	if err != nil {
 		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "warmup_configuration_error", "Cannot resolve warmup configuration", streamStarted)
 		return true
@@ -116,9 +119,6 @@ func (h *GatewayHandler) handleEarlyWarmup(c *gin.Context, apiKey *service.APIKe
 	}
 	cfg := service.WarmupConfigFromCredentials(account.Credentials)
 	result := &service.WarmupResult{Text: "New Conversation", StopReason: "end_turn"}
-	var source service.WarmupRequest
-	_ = json.Unmarshal(body, &source)
-	desktopTitle := isDesktopTitleWarmup(body, model, source.MaxTokens)
 	if desktopTitle {
 		result.Text = "<title>New Conversation</title>"
 	}
