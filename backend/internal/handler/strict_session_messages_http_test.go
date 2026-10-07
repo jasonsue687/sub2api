@@ -46,7 +46,7 @@ func TestMessagesStrictBindingOffKeepsOfficialReselection(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, warmup.ID, selected)
 	require.NotContains(t, rec.Body.String(), "session_binding_error")
-	require.Contains(t, rec.Body.String(), "New Conversation")
+	require.Contains(t, rec.Body.String(), `"stop_reason":"end_turn"`)
 	require.Empty(t, rec.Header().Get("X-Sub2API-Bound-Account-Id"))
 }
 
@@ -77,7 +77,7 @@ func TestMessagesStrictBindingOnDoesNotReselect(t *testing.T) {
 	first, selected := postStrictMessages(t, h, group, groupID, zapLogger, strictHTTPMetadata())
 	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
 	require.Equal(t, bound.ID, selected)
-	require.Contains(t, first.Body.String(), "New Conversation")
+	require.Contains(t, first.Body.String(), `"stop_reason":"end_turn"`)
 
 	stored := requireStrictStoreAccount(t, store, cfg, groupID)
 	require.Equal(t, bound.ID, stored)
@@ -91,7 +91,7 @@ func TestMessagesStrictBindingOnDoesNotReselect(t *testing.T) {
 	require.NotEqual(t, other.ID, selected)
 	require.Contains(t, second.Body.String(), `"type":"session_binding_error"`)
 	require.Contains(t, second.Body.String(), `"code":"strict_session_account_unavailable"`)
-	require.NotContains(t, second.Body.String(), "New Conversation")
+	require.NotContains(t, second.Body.String(), `"stop_reason":"end_turn"`)
 	require.NotContains(t, second.Body.String(), strictHTTPSessionID)
 	require.Empty(t, second.Header().Get("X-Sub2API-Bound-Account-Id"))
 	require.Equal(t, bound.ID, requireStrictStoreAccount(t, store, cfg, groupID))
@@ -190,10 +190,14 @@ func newStrictGateway(cfg *strictMessagesTestConfig, repo service.AccountReposit
 	if len(runtimeSettings) > 0 {
 		settings = runtimeSettings[0]
 	}
+	var usageBilling *service.BillingService
+	if cfg.warmupUsage != nil {
+		usageBilling = service.NewBillingService(&cfg.Config, nil)
+	}
 	return service.NewGatewayService(
 		repo,
 		groups,
-		nil,
+		cfg.warmupUsage,
 		nil,
 		nil,
 		nil,
@@ -202,7 +206,7 @@ func newStrictGateway(cfg *strictMessagesTestConfig, repo service.AccountReposit
 		&cfg.Config,
 		snapshot,
 		cfg.concurrency,
-		nil,
+		usageBilling,
 		nil,
 		nil,
 		nil,
@@ -271,7 +275,7 @@ func postStrictMessagesWithAPIKey(t *testing.T, h *GatewayHandler, group *servic
 		"model":      "claude-sonnet-4-5",
 		"max_tokens": 256,
 		"messages": []any{
-			map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "Warmup"}}},
+			map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "[SUGGESTION MODE: next action]"}}},
 		},
 	}
 	if metadataUserID != "" {
@@ -541,7 +545,7 @@ func TestMessagesStrictRejectsWithoutUsingLegacyFallbackTargets(t *testing.T) {
 	require.Zero(t, selected)
 	require.Equal(t, strictSessionErrorAccountUnavailable, second.Header().Get(strictSessionErrorHeader))
 	require.Contains(t, second.Body.String(), `"reason":"rate_limited"`)
-	require.NotContains(t, second.Body.String(), "New Conversation")
+	require.NotContains(t, second.Body.String(), `"stop_reason":"end_turn"`)
 	require.NotContains(t, second.Body.String(), "msg_third")
 	require.Zero(t, hits)
 	require.NotEqual(t, sibling.ID, selected)
@@ -556,6 +560,7 @@ func TestMessagesStrictRejectsWithoutUsingLegacyFallbackTargets(t *testing.T) {
 
 // Test inputs keep process settings separate from the database policy.
 type strictMessagesTestConfig struct {
+	warmupUsage service.UsageLogRepository
 	config.Config
 	binding        config.GatewayStrictSessionBindingConfig
 	legacyFallback map[string]string

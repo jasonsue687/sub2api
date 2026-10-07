@@ -600,6 +600,7 @@
               ]"
             />
           </button>
+          <WarmupSettingsFields v-if="interceptWarmupRequests" v-model="warmupSettings" />
         </div>
       </div>
 
@@ -1474,6 +1475,8 @@
 </template>
 
 <script setup lang="ts">
+import WarmupSettingsFields from './WarmupSettingsFields.vue'
+import { readWarmupSettings, applyWarmupSettings } from './warmupSettings'
 import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -1684,6 +1687,7 @@ const modelMappings = ref<ModelMapping[]>([])
 const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
+const warmupSettings = ref(readWarmupSettings())
 const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const proxyId = ref<number | null>(null)
@@ -2042,6 +2046,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 
   if (enableInterceptWarmup.value) {
     credentials.intercept_warmup_requests = interceptWarmupRequests.value
+    if (interceptWarmupRequests.value) applyWarmupSettings(credentials, warmupSettings.value)
     credentialsChanged = true
   }
 
@@ -2394,6 +2399,7 @@ watch(
       selectedErrorCodes.value = []
       customErrorCodeInput.value = null
       interceptWarmupRequests.value = false
+      warmupSettings.value = readWarmupSettings()
       headerOverrideEnabled.value = false
       headerOverrideRows.value = []
       proxyId.value = null

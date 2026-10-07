@@ -2632,6 +2632,7 @@
             />
           </button>
         </div>
+        <WarmupSettingsFields v-if="interceptWarmupRequests" v-model="warmupSettings" />
       </div>
 
       <!-- 配额控制 (Anthropic OAuth/SetupToken: 亲和 + 窗口费用 + 会话 + RPM 等) -->
@@ -3902,6 +3903,8 @@
 </template>
 
 <script setup lang="ts">
+import WarmupSettingsFields from './WarmupSettingsFields.vue'
+import { readWarmupSettings, applyWarmupSettings } from './warmupSettings'
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4450,6 +4453,7 @@ const applyGrokOAuthUpstreamConfig = (credentials: Record<string, unknown>) => {
   applyHeaderOverride(credentials, headerOverrideEnabled.value, headerOverrideRows.value, 'create')
 }
 const interceptWarmupRequests = ref(false)
+const warmupSettings = ref(readWarmupSettings())
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
 // OpenAI Codex namespace 工具摊平兼容开关（仅 OAuth），缺省关闭即原样保留
@@ -4929,6 +4933,7 @@ watch(
     // Reset Anthropic/Antigravity-specific settings when switching to other platforms
     if (newPlatform !== 'anthropic' && newPlatform !== 'antigravity') {
       interceptWarmupRequests.value = false
+      warmupSettings.value = readWarmupSettings()
     }
     if (newPlatform !== 'openai') {
       openaiPassthroughEnabled.value = false
@@ -5383,6 +5388,7 @@ const resetForm = () => {
   grokOAuthCustomBaseUrlEnabled.value = false
   grokOAuthBaseUrl.value = ''
   interceptWarmupRequests.value = false
+  warmupSettings.value = readWarmupSettings()
   autoPauseOnExpired.value = true
   openaiPassthroughEnabled.value = false
   openaiFlattenNamespacesEnabled.value = false
@@ -5727,6 +5733,7 @@ const handleSubmit = async () => {
     }
 
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+    applyWarmupSettings(credentials, warmupSettings.value)
 
     await createAccountAndFinish('anthropic', 'bedrock' as AccountType, credentials)
     return
@@ -5764,6 +5771,7 @@ const handleSubmit = async () => {
     }
 
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+    applyWarmupSettings(credentials, warmupSettings.value)
 
     const extra = buildAntigravityExtra()
     await createAccountAndFinish(form.platform, 'apikey', credentials, extra)
@@ -5898,6 +5906,7 @@ const handleSubmit = async () => {
   }
 
   applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+  applyWarmupSettings(credentials, warmupSettings.value)
   if (!applyTempUnschedConfig(credentials)) {
     return
   }
@@ -6860,6 +6869,7 @@ const handleAntigravityExchange = async (authCode: string) => {
 		const credentials = antigravityOAuth.buildCredentials(tokenInfo)
 		applyAntigravityProjectID(credentials, antigravityProjectId.value, 'create')
 		applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+		applyWarmupSettings(credentials, warmupSettings.value)
 		// Antigravity 只使用映射模式
 		const antigravityModelMapping = buildModelMappingObject(
 			'mapping',
@@ -6996,6 +7006,7 @@ const handleAnthropicExchange = async (authCode: string) => {
 
     const credentials: Record<string, unknown> = { ...tokenInfo }
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+    applyWarmupSettings(credentials, warmupSettings.value)
     await createAccountAndFinish(form.platform, addMethod.value as AccountType, credentials, extra)
   } catch (error: any) {
     oauth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
@@ -7123,6 +7134,7 @@ const handleCookieAuth = async (sessionKey: string) => {
 
         const credentials: Record<string, unknown> = { ...tokenInfo }
         applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+        applyWarmupSettings(credentials, warmupSettings.value)
         if (tempUnschedEnabled.value) {
           credentials.temp_unschedulable_enabled = true
           credentials.temp_unschedulable_rules = tempUnschedPayload

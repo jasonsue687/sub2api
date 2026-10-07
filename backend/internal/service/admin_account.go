@@ -526,6 +526,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		return nil, err
 	}
 	// Never persist ephemeral SSO/password secrets after OAuth conversion.
+	if err := ValidateWarmupCredentials(input.Credentials); err != nil {
+		return nil, err
+	}
 	input.Credentials = SanitizeStoredCredentials(input.Platform, input.Credentials)
 
 	account, err := buildAccountForCreate(input, accountExtra)
@@ -659,6 +662,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		// Strip SSO/password residue that must never sit next to OAuth tokens.
+		if err := ValidateWarmupCredentials(account.Credentials); err != nil {
+			return nil, err
+		}
 		account.Credentials = SanitizeStoredCredentials(account.Platform, account.Credentials)
 	}
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
@@ -1035,6 +1041,16 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// UpdateAccount 守卫对齐)。覆盖显式 IDs 与 filter 解析出的 IDs(此处 AccountIDs 已解析完成)。
 	if len(input.Credentials) > 0 {
 		for _, acc := range cachedTargets {
+			if acc != nil {
+				merged := maps.Clone(acc.Credentials)
+				if merged == nil {
+					merged = make(map[string]any)
+				}
+				maps.Copy(merged, input.Credentials)
+				if err := ValidateWarmupCredentials(merged); err != nil {
+					return nil, err
+				}
+			}
 			if acc != nil && acc.IsCredentialShadow() {
 				return nil, infraerrors.Newf(http.StatusBadRequest, "SPARK_SHADOW_NO_CREDENTIALS",
 					"spark shadow account %d cannot hold credentials; manage credentials on the parent account", acc.ID)

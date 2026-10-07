@@ -298,6 +298,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	defer inflightRelease()
 
+	if detectInterceptType(body, reqModel, parsedReq.MaxTokens, isClaudeCodeClient) == InterceptTypeWarmup {
+		if h.handleEarlyWarmup(c, apiKey, subscription, body, reqModel, reqStream, streamStarted, pricingAt) {
+			return
+		}
+	}
+
 	// 设置请求所属分组 ID（用于渠道级功能判断，如 WebSearch 模拟）
 	parsedReq.GroupID = apiKey.GroupID
 
@@ -404,7 +410,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
 				interceptType := detectInterceptType(body, reqModel, parsedReq.MaxTokens, isClaudeCodeClient)
-				if interceptType != InterceptTypeNone {
+				if interceptType != InterceptTypeNone && interceptType != InterceptTypeWarmup {
 					if selection.Acquired && selection.ReleaseFunc != nil {
 						selection.ReleaseFunc()
 					}
@@ -765,7 +771,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
 				interceptType := detectInterceptType(body, reqModel, parsedReq.MaxTokens, isClaudeCodeClient)
-				if interceptType != InterceptTypeNone {
+				if interceptType != InterceptTypeNone && interceptType != InterceptTypeWarmup {
 					if selection.Acquired && selection.ReleaseFunc != nil {
 						selection.ReleaseFunc()
 					}
@@ -2336,61 +2342,35 @@ func detectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeC
 		return InterceptTypeMaxTokensOneHaiku
 	}
 
-	// 快速检查：如果不包含任何关键字，直接返回
-	bodyStr := string(body)
-	hasSuggestionMode := strings.Contains(bodyStr, "[SUGGESTION MODE:")
-	hasWarmupKeyword := strings.Contains(bodyStr, "title") || strings.Contains(bodyStr, "Warmup")
-
-	if !hasSuggestionMode && !hasWarmupKeyword {
+	// Avoid another JSON decode for ordinary requests without an intercept marker.
+	bodyText := string(body)
+	if !strings.Contains(bodyText, "title") && !strings.Contains(bodyText, "Warmup") && !strings.Contains(bodyText, "[SUGGESTION MODE:") {
 		return InterceptTypeNone
 	}
-
-	// 解析请求（只解析一次）
-	var req struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"messages"`
-		System []struct {
-			Text string `json:"text"`
-		} `json:"system"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	var req service.WarmupRequest
+	if json.Unmarshal(body, &req) != nil {
 		return InterceptTypeNone
 	}
-
-	// 检查 SUGGESTION MODE（最后一条 user 消息）
-	if hasSuggestionMode && len(req.Messages) > 0 {
-		lastMsg := req.Messages[len(req.Messages)-1]
-		if lastMsg.Role == "user" && len(lastMsg.Content) > 0 &&
-			lastMsg.Content[0].Type == "text" &&
-			strings.HasPrefix(lastMsg.Content[0].Text, "[SUGGESTION MODE:") {
-			return InterceptTypeSuggestionMode
-		}
-	}
-
-	// 检查 Warmup 请求
-	if hasWarmupKeyword {
-		// 检查 messages 中的标题提示模式
-		for _, msg := range req.Messages {
-			for _, content := range msg.Content {
-				if content.Type == "text" {
-					if strings.Contains(content.Text, "Please write a 5-10 word title for the following conversation:") ||
-						content.Text == "Warmup" {
-						return InterceptTypeWarmup
-					}
-				}
+	if len(req.Messages) > 0 {
+		last := req.Messages[len(req.Messages)-1]
+		text, ok := service.WarmupText(last.Content)
+		if ok && last.Role == "user" {
+			if strings.HasPrefix(text, "[SUGGESTION MODE:") {
+				return InterceptTypeSuggestionMode
 			}
-		}
-		// 检查 system 中的标题提取模式
-		for _, sys := range req.System {
-			if strings.Contains(sys.Text, "nalyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title") {
+			// Legacy title commands may follow the conversation being summarized.
+			if strings.HasPrefix(text, "Please write a 5-10 word title for the following conversation:") {
 				return InterceptTypeWarmup
 			}
 		}
+	}
+	system, systemOK := service.WarmupText(req.System)
+	if systemOK && len(req.Messages) > 0 && strings.Contains(system, "nalyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title") {
+		return InterceptTypeWarmup
+	}
+	_, text, singleUser := parseWarmupText(body)
+	if singleUser && (text == "Warmup" || isXMLTitleWarmup(body)) {
+		return InterceptTypeWarmup
 	}
 
 	return InterceptTypeNone
@@ -2398,6 +2378,11 @@ func detectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeC
 
 // sendMockInterceptStream 发送流式 mock 响应（用于请求拦截）
 func sendMockInterceptStream(c *gin.Context, model string, interceptType InterceptType) {
+	if interceptType == InterceptTypeMaxTokensOneHaiku {
+		sendWarmupResult(c, model, true, &service.WarmupResult{Text: "#", StopReason: "max_tokens", Usage: service.ClaudeUsage{InputTokens: 10, OutputTokens: 1}})
+		return
+	}
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
