@@ -103,6 +103,8 @@ func RegisterAdminRoutes(
 		// TLS 指纹模板管理
 		registerTLSFingerprintProfileRoutes(admin, h)
 
+		registerAccountFingerprintRoutes(admin, h)
+
 		// 本地进程插件管理
 		registerPluginRoutes(admin, h, stepUpAuth)
 

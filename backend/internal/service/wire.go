@@ -33,6 +33,18 @@ type BuildInfo struct {
 	BuildType string
 }
 
+func ProvideIdentityService(cache IdentityCache, registry AccountFingerprintStore) *IdentityService {
+	svc := NewIdentityService(cache)
+	svc.registry = registry
+	// Backfill snapshots before serving traffic. Missing entries are skipped;
+	// failures are visible and can be retried from the administrative page.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := registry.ImportCache(ctx)
+	logger.LegacyPrintf("service.identity", "Fingerprint cache import: result=%+v error=%v", result, err)
+	return svc
+}
+
 // ProvidePricingService creates and initializes PricingService
 func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient) (*PricingService, error) {
 	svc := NewPricingService(cfg, remoteClient)
@@ -933,7 +945,7 @@ var ProviderSet = wire.NewSet(
 	ProvideUserMessageQueueService,
 	NewUsageRecordWorkerPool,
 	ProvideSchedulerSnapshotService,
-	NewIdentityService,
+	ProvideIdentityService,
 	NewCRSSyncService,
 	ProvideUpdateService,
 	ProvideTokenRefreshService,
