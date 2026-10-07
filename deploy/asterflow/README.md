@@ -8,6 +8,8 @@
 
 验证包括完整后端 unit/integration、lint、审计 race、前端 lint/typecheck/关键测试和部署策略测试。PR 无生产凭据，不发布镜像。
 
+已完成本地验证且操作者明确批准跳过 GitHub CI 时，可手动运行并设置 `skip_checks=true`，仅构建发布镜像。默认 false，push / PR 仍执行完整验证；该选项不跳过 Release 来源、Tag、digest 校验或生产预检、备份和健康验收。须在 PR 和部署记录中保存本地验证结果及跳过授权。
+
 构建镜像为 `ghcr.io/jasonsue687/sub2api:asterflow-sha-<完整SHA>`；部署始终固定 digest。程序版本形如 `0.2.13-asterflow.3`。`asterflow-release/release.json` 记录 SHA、digest、程序版本、构建 ID/attempt 和数据库迁移哈希，Actions 制品保留 90 天；必须在到期前正式发布，过期未发布的构建需重新构建。
 
 ## 2. 将已验证的构建发布为正式版本
