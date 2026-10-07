@@ -87,7 +87,7 @@ func TestRedactCredentials_AllKnownSensitiveKeys(t *testing.T) {
 		"api_key", "session_key", "cookie",
 		"aws_secret_access_key", "aws_session_token",
 		"service_account_json", "service_account", "private_key",
-		"agent_private_key",
+		"agent_private_key", "warmup_api_key",
 	}
 	in := make(map[string]any, len(keys))
 	for _, k := range keys {

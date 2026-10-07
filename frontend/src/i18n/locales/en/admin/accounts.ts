@@ -861,8 +861,14 @@ export default {
       invalidErrorCode: 'Please enter a valid HTTP error code (100-599)',
       errorCodeExists: 'This error code is already selected',
       interceptWarmupRequests: 'Intercept Warmup Requests',
-      interceptWarmupRequestsDesc:
-        'When enabled, warmup requests like title generation will return mock responses without consuming upstream tokens',
+      interceptWarmupRequestsDesc: 'Handle title and warmup requests with Mock responses or an external model',
+      warmup: {
+        scope: 'Applies to warmups in this account’s groups that support the requested model. Enabled accounts use lowest priority number, then lowest ID. No session binding or subscription account capacity is used.',
+        mode: 'Mode', mock: 'Mock response', forward: 'Forward to another platform',
+        protocol: 'Protocol', model: 'Upstream model', timeout: 'Timeout (seconds)',
+        keyStored: 'Configured (leave blank to keep)',
+        forwardHint: 'Forwarding records real usage and bills the configured upstream model. Failures return an error without subscription fallback. Configure pricing for the upstream model.'
+      },
       headerOverride: {
         title: 'Header Override',
         hint: 'Override same-named request headers on forwarding (case-insensitive)',

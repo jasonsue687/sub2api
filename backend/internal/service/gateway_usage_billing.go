@@ -73,6 +73,7 @@ type usageLogBestEffortWriter interface {
 
 // postUsageBillingParams 统一扣费所需的参数
 type postUsageBillingParams struct {
+	SkipAccountUsage      bool
 	Cost                  *CostBreakdown
 	User                  *User
 	APIKey                *APIKey
@@ -137,7 +138,7 @@ func (p *postUsageBillingParams) shouldUpdateRateLimits() bool {
 }
 
 func (p *postUsageBillingParams) shouldUpdateAccountQuota() bool {
-	return p.Cost.TotalCost > 0 && p.Account.IsAPIKeyOrBedrock() && p.Account.HasAnyQuotaLimit()
+	return !p.SkipAccountUsage && p.Cost.TotalCost > 0 && p.Account.IsAPIKeyOrBedrock() && p.Account.HasAnyQuotaLimit()
 }
 
 // postUsageBilling is the legacy fallback billing path used when the unified
@@ -375,7 +376,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	}
 
 	if result == nil || !result.Applied {
-		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		if !p.SkipAccountUsage {
+			deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		}
 		return false, nil
 	}
 
@@ -404,7 +407,9 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 				logger.LegacyPrintf("service.gateway", "Warning: invalidate simple-mode api key rate-limit cache failed for key %d: %v", p.APIKey.ID, err)
 			}
 		}
-		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		if !p.SkipAccountUsage {
+			deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		}
 		return
 	}
 
@@ -420,7 +425,9 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 		deps.billingCacheService.QueueUpdateAPIKeyRateLimitUsage(p.APIKey.ID, p.Cost.ActualCost)
 	}
 
-	deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+	if !p.SkipAccountUsage {
+		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+	}
 
 	// Platform quota 累加：仅在 standard（余额）模式生效；订阅模式豁免；仅对有 limit 的用户写
 	// Redis 同步写 + DB 异步持久化（flag=false 降级）或 flusher 异步刷（flag=true）:
@@ -540,7 +547,7 @@ func notifyAccountQuota(p *postUsageBillingParams, deps *billingDeps, result *Us
 			slog.Error("panic in notifyAccountQuota", "recover", r)
 		}
 	}()
-	if p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.IsAPIKeyOrBedrock() || deps.balanceNotifyService == nil {
+	if p.SkipAccountUsage || p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.IsAPIKeyOrBedrock() || deps.balanceNotifyService == nil {
 		slog.Debug("notifyAccountQuota: skipped",
 			"total_cost", p.Cost.TotalCost,
 			"account_nil", p.Account == nil,
@@ -782,7 +789,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	// Cache TTL Override: 确保计费时 token 分类与账号设置一致。
 	// 账号级设置优先；全局 1h 请求注入开启时，默认把 usage 计费归回 5m。
 	cacheTTLOverridden := false
-	if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
+	if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok && !result.ExternalWarmup {
 		applyCacheTTLOverride(&result.Usage, overrideTarget)
 		cacheTTLOverridden = (result.Usage.CacheCreation5mTokens + result.Usage.CacheCreation1hTokens) > 0
 	}
@@ -867,7 +874,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost)
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
-	if apiKey.GroupID != nil {
+	if apiKey.GroupID != nil && !result.ExternalWarmup {
 		applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
 			account.ID, *apiKey.GroupID, result.UpstreamModel, result.Model,
 			// Anthropic's input_tokens excludes cache_read and cache_creation (billed separately);
@@ -888,7 +895,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && !simpleModeKeyRateLimitOnly {
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
-		s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		if !result.ExternalWarmup {
+			s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		}
 		return nil
 	}
 
@@ -904,6 +913,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 	requestID := usageLog.RequestID
 	_, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
+		SkipAccountUsage:           result.ExternalWarmup,
 		Cost:                       cost,
 		User:                       user,
 		APIKey:                     apiKey,

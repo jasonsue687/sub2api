@@ -57,7 +57,7 @@ func TestMessagesStrictSessionCapacityAcrossIdentitySources(t *testing.T) {
 				t.Cleanup(cleanup)
 				h.concurrencyHelper = NewConcurrencyHelper(cfg.concurrency, SSEPingFormatClaude, 0)
 
-				// Warmup is handled locally after admission; no upstream is contacted.
+				// Suggestion mode is handled locally after account admission; no upstream is contacted.
 				// Start with either representation, switch, then switch back.
 				for i := 0; i < 3; i++ {
 					metadata, headers := strictHTTPMetadata(), http.Header(nil)

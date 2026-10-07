@@ -310,10 +310,9 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_MixedScheduli
 
 	require.Equal(t, 200, rec.Code)
 
-	// 断言：确实选中了 antigravity 账号（不是纯函数测试，而是从 Handler 里验证调度结果）
-	selected, ok := c.Get(opsAccountIDKey)
-	require.True(t, ok)
-	require.Equal(t, accountID, selected)
+	// Early warmup reads group configuration without selecting any account.
+	_, selected := c.Get(opsAccountIDKey)
+	require.False(t, selected)
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
@@ -402,9 +401,8 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_ForcePlatform
 
 	require.Equal(t, 200, rec.Code)
 
-	selected, ok := c.Get(opsAccountIDKey)
-	require.True(t, ok)
-	require.Equal(t, accountID, selected)
+	_, selected := c.Get(opsAccountIDKey)
+	require.False(t, selected)
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))

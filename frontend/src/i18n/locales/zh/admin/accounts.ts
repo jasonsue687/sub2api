@@ -964,7 +964,14 @@ export default {
       invalidErrorCode: '请输入有效的 HTTP 错误码 (100-599)',
       errorCodeExists: '该错误码已被选中',
       interceptWarmupRequests: '拦截预热请求',
-      interceptWarmupRequestsDesc: '启用后，标题生成等预热请求将返回 mock 响应，不消耗上游 token',
+      interceptWarmupRequestsDesc: '为标题生成等预热请求选择 Mock 或外部模型转发',
+      warmup: {
+        scope: '作用于账号所属分组中可使用此模型的预热请求；多个账号开启时，优先级数值较小者优先，同优先级取 ID 较小者。不会绑定会话或占用订阅账号容量。',
+        mode: '处理方式', mock: 'Mock 返回', forward: '转发到其他平台',
+        protocol: '接口协议', model: '上游模型名称', timeout: '超时时间（秒）',
+        keyStored: '已配置（留空保留）',
+        forwardHint: '转发会产生实际用量，按配置的上游模型计费。失败时返回错误，不回退到订阅账号。建议为上游模型配置价格。'
+      },
       headerOverride: {
         title: '请求头覆写',
         hint: '转发时用配置值覆盖同名请求头（不区分大小写）',

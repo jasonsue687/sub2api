@@ -1641,6 +1641,7 @@
             />
           </button>
         </div>
+        <WarmupSettingsFields v-if="interceptWarmupRequests" v-model="warmupSettings" />
       </div>
 
       <div v-if="!isSparkShadow">
@@ -3104,6 +3105,8 @@
 </template>
 
 <script setup lang="ts">
+import WarmupSettingsFields from './WarmupSettingsFields.vue'
+import { readWarmupSettings, applyWarmupSettings } from './warmupSettings'
 import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -3610,6 +3613,7 @@ const loadGrokMediaEligibility = async (accountID: number): Promise<GrokMediaEli
 }
 
 const interceptWarmupRequests = ref(false)
+const warmupSettings = ref(readWarmupSettings())
 const autoPauseOnExpired = ref(false)
 const autoPause5hThreshold = ref<number | null>(null)
 const autoPause7dThreshold = ref<number | null>(null)
@@ -4137,6 +4141,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
+  warmupSettings.value = readWarmupSettings(credentials, props.account?.credentials_status)
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
   editVertexClientEmail.value = ''
@@ -5285,6 +5290,7 @@ const handleSubmit = async () => {
 
       // Add intercept warmup requests setting
       applyInterceptWarmup(newCredentials, interceptWarmupRequests.value, 'edit')
+      applyWarmupSettings(newCredentials, warmupSettings.value)
       applyAccountSchedulingThresholdOverridePatch(newCredentials, currentCredentials)
       if (!applyTempUnschedConfig(newCredentials)) {
         return
@@ -5303,6 +5309,7 @@ const handleSubmit = async () => {
 
       // Add intercept warmup requests setting
       applyInterceptWarmup(newCredentials, interceptWarmupRequests.value, 'edit')
+      applyWarmupSettings(newCredentials, warmupSettings.value)
 
       applyAccountSchedulingThresholdOverridePatch(newCredentials, currentCredentials)
       if (!applyTempUnschedConfig(newCredentials)) {
@@ -5353,6 +5360,7 @@ const handleSubmit = async () => {
       }
 
       applyInterceptWarmup(newCredentials, interceptWarmupRequests.value, 'edit')
+      applyWarmupSettings(newCredentials, warmupSettings.value)
       applyAccountSchedulingThresholdOverridePatch(newCredentials, currentCredentials)
       if (!applyTempUnschedConfig(newCredentials)) {
         return
@@ -5411,6 +5419,7 @@ const handleSubmit = async () => {
       }
 
       applyInterceptWarmup(newCredentials, interceptWarmupRequests.value, 'edit')
+      applyWarmupSettings(newCredentials, warmupSettings.value)
       applyAccountSchedulingThresholdOverridePatch(newCredentials, currentCredentials)
       if (!applyTempUnschedConfig(newCredentials)) {
         return
@@ -5423,6 +5432,7 @@ const handleSubmit = async () => {
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
 
       applyInterceptWarmup(newCredentials, interceptWarmupRequests.value, 'edit')
+      applyWarmupSettings(newCredentials, warmupSettings.value)
       applyAccountSchedulingThresholdOverridePatch(newCredentials, currentCredentials)
       if (!applyTempUnschedConfig(newCredentials)) {
         return

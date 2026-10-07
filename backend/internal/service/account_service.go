@@ -224,6 +224,9 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 
 // Create 创建账号
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
+	if err := ValidateWarmupCredentials(req.Credentials); err != nil {
+		return nil, err
+	}
 	if req.Platform == PlatformTypeSafe && req.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}
@@ -333,6 +336,9 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	if req.Credentials != nil {
+		if err := ValidateWarmupCredentials(*req.Credentials); err != nil {
+			return nil, err
+		}
 		account.Credentials = SanitizeStoredCredentials(account.Platform, *req.Credentials)
 	}
 
