@@ -931,31 +931,31 @@ func (s *GroupRepoSuite) TestListWithFilters_RateLimitedAccountCount() {
 
 	var normalID int64
 	s.Require().NoError(scanSingleRow(s.ctx, s.tx,
-		"INSERT INTO accounts (name, platform, type) VALUES ($1, $2, $3) RETURNING id",
+		"INSERT INTO accounts (name, platform, type, schedulable) VALUES ($1, $2, $3, TRUE) RETURNING id",
 		[]any{"acc-normal", service.PlatformAnthropic, service.AccountTypeOAuth},
 		&normalID))
 
 	var rateLimitedID int64
 	s.Require().NoError(scanSingleRow(s.ctx, s.tx,
-		"INSERT INTO accounts (name, platform, type, rate_limit_reset_at) VALUES ($1, $2, $3, NOW() + INTERVAL '1 hour') RETURNING id",
+		"INSERT INTO accounts (name, platform, type, schedulable, rate_limit_reset_at) VALUES ($1, $2, $3, TRUE, NOW() + INTERVAL '1 hour') RETURNING id",
 		[]any{"acc-rate-limited", service.PlatformAnthropic, service.AccountTypeOAuth},
 		&rateLimitedID))
 
 	var overloadedID int64
 	s.Require().NoError(scanSingleRow(s.ctx, s.tx,
-		"INSERT INTO accounts (name, platform, type, overload_until) VALUES ($1, $2, $3, NOW() + INTERVAL '1 hour') RETURNING id",
+		"INSERT INTO accounts (name, platform, type, schedulable, overload_until) VALUES ($1, $2, $3, TRUE, NOW() + INTERVAL '1 hour') RETURNING id",
 		[]any{"acc-overloaded", service.PlatformAnthropic, service.AccountTypeOAuth},
 		&overloadedID))
 
 	var tempUnschedulableID int64
 	s.Require().NoError(scanSingleRow(s.ctx, s.tx,
-		"INSERT INTO accounts (name, platform, type, temp_unschedulable_until) VALUES ($1, $2, $3, NOW() + INTERVAL '1 hour') RETURNING id",
+		"INSERT INTO accounts (name, platform, type, schedulable, temp_unschedulable_until) VALUES ($1, $2, $3, TRUE, NOW() + INTERVAL '1 hour') RETURNING id",
 		[]any{"acc-temp-unschedulable", service.PlatformAnthropic, service.AccountTypeOAuth},
 		&tempUnschedulableID))
 
 	var expiredID int64
 	s.Require().NoError(scanSingleRow(s.ctx, s.tx,
-		"INSERT INTO accounts (name, platform, type, expires_at, auto_pause_on_expired) VALUES ($1, $2, $3, NOW() - INTERVAL '1 hour', TRUE) RETURNING id",
+		"INSERT INTO accounts (name, platform, type, schedulable, expires_at, auto_pause_on_expired) VALUES ($1, $2, $3, TRUE, NOW() - INTERVAL '1 hour', TRUE) RETURNING id",
 		[]any{"acc-expired", service.PlatformAnthropic, service.AccountTypeOAuth},
 		&expiredID))
 
