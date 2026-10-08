@@ -5,19 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/redis/go-redis/v9"
 )
 
 type accountFingerprintRepository struct {
-	db  *sql.DB
-	rdb *redis.Client
+	db *sql.DB
 }
 
-func NewAccountFingerprintRepository(db *sql.DB, rdb *redis.Client) service.AccountFingerprintStore {
-	return &accountFingerprintRepository{db: db, rdb: rdb}
+func NewAccountFingerprintRepository(db *sql.DB) service.AccountFingerprintStore {
+	return &accountFingerprintRepository{db: db}
 }
 
 func (r *accountFingerprintRepository) Observe(ctx context.Context, record *service.FingerprintRecord) error {
@@ -169,58 +166,4 @@ func (r *accountFingerprintRepository) Bind(ctx context.Context, accountID int64
 		return err
 	}
 	return tx.Commit()
-}
-
-// Import only snapshots of existing OAuth accounts. Never call GetOrCreate:
-// missing/corrupt cache entries must not mint replacement device identities.
-func (r *accountFingerprintRepository) ImportCache(ctx context.Context) (*service.FingerprintImportResult, error) {
-	result := &service.FingerprintImportResult{}
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id FROM accounts a WHERE `+fingerprintEligibleAccount+` ORDER BY a.id`)
-	if err != nil {
-		return result, err
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return result, err
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if err != nil {
-		return result, err
-	}
-	cache := NewIdentityCache(r.rdb)
-	for _, id := range ids {
-		if ctx.Err() != nil {
-			return result, ctx.Err()
-		}
-		fp, err := cache.GetFingerprint(ctx, id)
-		if errors.Is(err, redis.Nil) {
-			result.Missing++
-			continue
-		}
-		if err != nil || fp == nil || fp.ClientID == "" || fp.UserAgent == "" {
-			result.Failed++
-			continue
-		}
-		// Keep every identity field byte-for-byte, excluding cache TTL metadata.
-		fp.UpdatedAt = 0
-		record := &service.FingerprintRecord{
-			Source: "cache", Fingerprint: *fp, ClientIDOrigin: "cache", SourceAccountID: &id,
-			Key: service.FingerprintRecordKey(struct {
-				Source      string
-				AccountID   int64
-				Fingerprint service.Fingerprint
-			}{"cache", id, *fp}),
-		}
-		if err := r.Observe(ctx, record); err != nil {
-			return result, fmt.Errorf("import fingerprint for account %d: %w", id, err)
-		}
-		result.Imported++
-	}
-	return result, nil
 }

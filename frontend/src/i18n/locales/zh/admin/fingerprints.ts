@@ -3,8 +3,6 @@ export default {
     title: '账号身份指纹',
     description: '登记 Anthropic 请求携带的身份指纹，按相同指纹累计次数，并保留从现有账号缓存导入的身份。',
     stagedNotice: '当前仅登记身份和保存绑定关系。绑定尚未用于发送请求，现有指纹选择方式保持不变。',
-    importCache: '导入现有缓存身份',
-    importResult: '已导入或确认 {imported} 个账号；{missing} 个无缓存；{failed} 个读取失败。重复导入不会重复建档。',
     search: '搜索指纹 ID、UA 或设备标识',
     searchAccount: '搜索订阅账号名称或 ID',
     allSources: '全部来源', source: '来源', request: '入站请求', cache: '账号缓存',
@@ -15,8 +13,7 @@ export default {
     boundAccounts: '已绑定订阅账号', unbound: '未绑定', bindAccount: '绑定订阅账号',
     bindingAction: '身份绑定', bindingTitle: '订阅账号身份绑定', account: '订阅账号',
     selectAccount: '请选择订阅账号', currentBinding: '当前绑定', selectedFingerprint: '要绑定的身份指纹',
-    empty: '暂无身份指纹，可导入现有缓存身份；新的请求也会自动登记。',
-    loadFailed: '加载失败，请重试。', saveFailed: '保存绑定失败，请刷新后重试。',
-    importFailed: '缓存导入未完成，已导入的记录会保留，可重新执行。'
+    empty: '暂无身份指纹，新的请求会自动登记。',
+    loadFailed: '加载失败，请重试。', saveFailed: '保存绑定失败，请刷新后重试。'
   }
 }

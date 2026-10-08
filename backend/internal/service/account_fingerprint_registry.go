@@ -38,12 +38,6 @@ type FingerprintRecord struct {
 	BoundAccounts   []FingerprintAccount `json:"bound_accounts"`
 }
 
-type FingerprintImportResult struct {
-	Imported int `json:"imported"`
-	Missing  int `json:"missing"`
-	Failed   int `json:"failed"`
-}
-
 // This registry is deliberately separate from IdentityCache. No outbound
 // identity selection method can read administrative bindings through it.
 type AccountFingerprintStore interface {
@@ -53,7 +47,6 @@ type AccountFingerprintStore interface {
 	Accounts(context.Context, string, int, int) ([]FingerprintAccount, int64, error)
 	Binding(context.Context, int64) (*FingerprintRecord, error)
 	Bind(context.Context, int64, *int64) error
-	ImportCache(context.Context) (*FingerprintImportResult, error)
 }
 
 // FingerprintRecordKey excludes observation timestamps and never includes a

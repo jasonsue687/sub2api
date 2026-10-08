@@ -2,11 +2,9 @@ package admin
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -98,17 +96,6 @@ func (h *AccountFingerprintHandler) Bind(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"account_id": id, "fingerprint_id": fingerprintID, "applied": false})
-}
-
-func (h *AccountFingerprintHandler) ImportCache(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-	defer cancel()
-	result, err := h.store.ImportCache(ctx)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, result)
 }
 
 func fingerprintParamID(c *gin.Context) (int64, bool) {

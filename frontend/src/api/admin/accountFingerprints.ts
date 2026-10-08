@@ -50,7 +50,3 @@ export async function getFingerprintBinding(accountId: number) {
 export async function bindFingerprint(accountId: number, fingerprintId: number | null) {
   return (await apiClient.put(`/admin/accounts/${accountId}/fingerprint-binding`, { fingerprint_id: fingerprintId })).data
 }
-
-export async function importCachedFingerprints() {
-  return (await apiClient.post<{ imported: number; missing: number; failed: number }>('/admin/account-fingerprints/import-cache', {}, { timeout: 35000 })).data
-}
