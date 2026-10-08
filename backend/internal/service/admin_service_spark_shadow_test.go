@@ -74,7 +74,7 @@ func (s *sparkShadowRepoStub) ListSchedulableByGroupID(_ context.Context, groupI
 	for accID, groups := range s.groupsOf {
 		for _, gid := range groups {
 			if gid == groupID {
-				if acc, ok := s.accounts[accID]; ok {
+				if acc, ok := s.accounts[accID]; ok && acc.Status == StatusActive && acc.Schedulable {
 					result = append(result, *acc)
 				}
 				break
@@ -82,6 +82,15 @@ func (s *sparkShadowRepoStub) ListSchedulableByGroupID(_ context.Context, groupI
 		}
 	}
 	return result, nil
+}
+
+func (s *sparkShadowRepoStub) SetSchedulable(ctx context.Context, id int64, schedulable bool) error {
+	acc, err := s.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	acc.Schedulable = schedulable
+	return nil
 }
 
 // ListWithFilters は mockAccountRepoForGemini にないが AccountRepository が要求する。
@@ -151,6 +160,7 @@ func TestCreateShadow(t *testing.T) {
 	require.Nil(t, shadow.Credentials["refresh_token"], "影子不得持有 auth token")
 	require.Nil(t, shadow.Credentials["access_token"], "影子不得持有 auth token")
 	require.Equal(t, parent.ProxyID, shadow.ProxyID)
+	require.False(t, shadow.Schedulable)
 
 	// Test 2: 一母一影 — 再作成は拒否
 	_, err = svc.CreateShadow(ctx, parent.ID, ShadowOptions{Name: "dup"})
@@ -191,7 +201,7 @@ func TestCreateShadowInheritsParentEffectiveOpenAILongContextBillingValue(t *tes
 }
 
 // TestCreateShadow_BindGroups は BindGroups の後置呼び出しを検証する。
-// 影子账号が指定グループに属し、ListSchedulableByGroupID で取得可能であること。
+// A grouped shadow enters the scheduling pool only after explicit enabling.
 func TestCreateShadow_BindGroups(t *testing.T) {
 	ctx := context.Background()
 	repo := newSparkShadowRepoStub()
@@ -218,6 +228,11 @@ func TestCreateShadow_BindGroups(t *testing.T) {
 	require.Equal(t, []int64{testGroupID}, shadow.GroupIDs, "CreateShadow should backfill GroupIDs into the returned shadow")
 
 	accounts, err := repo.ListSchedulableByGroupID(ctx, testGroupID)
+	require.NoError(t, err)
+	require.Empty(t, accounts)
+	_, err = svc.SetAccountSchedulable(ctx, shadow.ID, true)
+	require.NoError(t, err)
+	accounts, err = repo.ListSchedulableByGroupID(ctx, testGroupID)
 	require.NoError(t, err)
 	require.Len(t, accounts, 1)
 	require.Equal(t, shadow.ID, accounts[0].ID)
