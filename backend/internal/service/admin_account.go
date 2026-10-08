@@ -435,7 +435,7 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Concurrency: normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
 		Priority:    input.Priority,
 		Status:      StatusActive,
-		Schedulable: true,
+		Schedulable: false, // New accounts require explicit scheduling approval.
 	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
@@ -1464,7 +1464,7 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		ProxyID:         parent.ProxyID,
 		Priority:        priority,
 		Concurrency:     concurrency,
-		Schedulable:     true,
+		Schedulable:     false,
 		Extra: map[string]any{
 			openAILongContextBillingEnabledKey: parent.IsOpenAILongContextBillingEnabled(),
 		},
