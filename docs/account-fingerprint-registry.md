@@ -15,7 +15,7 @@
 
 现有账号缓存身份仅在本功能首次上线时由运维执行一次性导入。应用启动、管理页面和 API 均不提供缓存导入能力，后续重启或发布不会重复扫描 Redis。
 
-一次性操作复用既有 `IdentityCache.GetFingerprint` 读取所有未删除的 Anthropic OAuth 账号缓存，并通过登记仓库写入快照。保留全部身份字段和 ClientID，只排除 Redis 的 UpdatedAt 元数据；不调用 `GetOrCreateFingerprint`，不续期、修改或删除缓存，不生成替代设备标识，也不自动绑定账号。无缓存账号跳过，读取失败单独报告，导入结果在发布验收中记录。
+一次性操作只筛选执行时启用且可调度、存在 active 且未删除分组、全局指纹统一开关为 true 的 Anthropic OAuth 账号，再复用既有 `IdentityCache.GetFingerprint` 读取其中仍有效的缓存，并通过登记仓库写入快照。保留全部身份字段和 ClientID，只排除 Redis 的 UpdatedAt 元数据；不调用 `GetOrCreateFingerprint`，不续期、修改或删除缓存，不生成替代设备标识，也不自动绑定账号。无缓存账号跳过，读取失败单独报告，导入结果在发布验收中记录。
 
 SQL 迁移：[`251_account_fingerprint_registry.sql`](../backend/migrations/251_account_fingerprint_registry.sql)。迁移仅创建表；一次性导入在迁移完成后执行，不依赖 SQL 访问 Redis。
 
